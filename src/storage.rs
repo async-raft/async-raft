@@ -2,17 +2,11 @@
 
 use std::sync::Arc;
 
-use actix::{
-    dev::ToEnvelope,
-    prelude::*,
-};
+use actix::{dev::ToEnvelope, prelude::*};
 use futures::sync::{mpsc::UnboundedReceiver, oneshot::Sender};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use crate::{
-    AppData, AppDataResponse, AppError, NodeId,
-    messages,
-};
+use crate::{messages, AppData, AppDataResponse, AppError, NodeId};
 
 //////////////////////////////////////////////////////////////////////////////
 // GetInitialState ///////////////////////////////////////////////////////////
@@ -34,7 +28,9 @@ pub struct GetInitialState<E: AppError> {
 impl<E: AppError> GetInitialState<E> {
     // Create a new instance.
     pub fn new() -> Self {
-        Self{marker: std::marker::PhantomData}
+        Self {
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -72,7 +68,12 @@ pub struct GetLogEntries<D: AppData, E: AppError> {
 impl<D: AppData, E: AppError> GetLogEntries<D, E> {
     // Create a new instance.
     pub fn new(start: u64, stop: u64) -> Self {
-        Self{start, stop, marker_data: std::marker::PhantomData, marker_error: std::marker::PhantomData}
+        Self {
+            start,
+            stop,
+            marker_data: std::marker::PhantomData,
+            marker_error: std::marker::PhantomData,
+        }
     }
 }
 
@@ -100,7 +101,10 @@ pub struct AppendEntryToLog<D: AppData, E: AppError> {
 impl<D: AppData, E: AppError> AppendEntryToLog<D, E> {
     // Create a new instance.
     pub fn new(entry: Arc<messages::Entry<D>>) -> Self {
-        Self{entry, marker: std::marker::PhantomData}
+        Self {
+            entry,
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -129,7 +133,10 @@ pub struct ReplicateToLog<D: AppData, E: AppError> {
 impl<D: AppData, E: AppError> ReplicateToLog<D, E> {
     // Create a new instance.
     pub fn new(entries: Arc<Vec<messages::Entry<D>>>) -> Self {
-        Self{entries, marker: std::marker::PhantomData}
+        Self {
+            entries,
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -157,7 +164,11 @@ pub struct ApplyEntryToStateMachine<D: AppData, R: AppDataResponse, E: AppError>
 impl<D: AppData, R: AppDataResponse, E: AppError> ApplyEntryToStateMachine<D, R, E> {
     // Create a new instance.
     pub fn new(payload: Arc<messages::Entry<D>>) -> Self {
-        Self{payload, marker0: std::marker::PhantomData, marker1: std::marker::PhantomData}
+        Self {
+            payload,
+            marker0: std::marker::PhantomData,
+            marker1: std::marker::PhantomData,
+        }
     }
 }
 
@@ -180,7 +191,10 @@ pub struct ReplicateToStateMachine<D: AppData, E: AppError> {
 impl<D: AppData, E: AppError> ReplicateToStateMachine<D, E> {
     // Create a new instance.
     pub fn new(payload: Vec<messages::Entry<D>>) -> Self {
-        Self{payload, marker: std::marker::PhantomData}
+        Self {
+            payload,
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -206,7 +220,10 @@ pub struct CreateSnapshot<E: AppError> {
 impl<E: AppError> CreateSnapshot<E> {
     // Create a new instance.
     pub fn new(through: u64) -> Self {
-        Self{through, marker: std::marker::PhantomData}
+        Self {
+            through,
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -234,7 +251,12 @@ pub struct InstallSnapshot<E: AppError> {
 impl<E: AppError> InstallSnapshot<E> {
     // Create a new instance.
     pub fn new(term: u64, index: u64, stream: UnboundedReceiver<InstallSnapshotChunk>) -> Self {
-        Self{term, index, stream, marker: std::marker::PhantomData}
+        Self {
+            term,
+            index,
+            stream,
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -272,7 +294,9 @@ pub struct GetCurrentSnapshot<E: AppError> {
 impl<E: AppError> GetCurrentSnapshot<E> {
     // Create a new instance.
     pub fn new() -> Self {
-        Self{marker: std::marker::PhantomData}
+        Self {
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -297,7 +321,7 @@ pub struct CurrentSnapshotData {
 // SaveHardState /////////////////////////////////////////////////////////////////////////////////
 
 /// A request from Raft to save its HardState.
-pub struct SaveHardState<E: AppError>{
+pub struct SaveHardState<E: AppError> {
     pub hs: HardState,
     marker: std::marker::PhantomData<E>,
 }
@@ -305,7 +329,10 @@ pub struct SaveHardState<E: AppError>{
 impl<E: AppError> SaveHardState<E> {
     // Create a new instance.
     pub fn new(hs: HardState) -> Self {
-        Self{hs, marker: std::marker::PhantomData}
+        Self {
+            hs,
+            marker: std::marker::PhantomData,
+        }
     }
 }
 
@@ -335,34 +362,34 @@ pub struct HardState {
 /// See the [storage chapter of the guide](https://railgun-rs.github.io/actix-raft/storage.html#InstallSnapshot)
 /// for details and discussion on this trait and how to implement it.
 pub trait RaftStorage<D, R, E>: 'static
-    where
-        D: AppData,
-        R: AppDataResponse,
-        E: AppError,
+where
+    D: AppData,
+    R: AppDataResponse,
+    E: AppError,
 {
     /// The type to use as the storage actor. Should just be Self.
-    type Actor: Actor<Context=Self::Context> +
-        Handler<GetInitialState<E>> +
-        Handler<SaveHardState<E>> +
-        Handler<GetLogEntries<D, E>> +
-        Handler<AppendEntryToLog<D, E>> +
-        Handler<ReplicateToLog<D, E>> +
-        Handler<ApplyEntryToStateMachine<D, R, E>> +
-        Handler<ReplicateToStateMachine<D, E>> +
-        Handler<CreateSnapshot<E>> +
-        Handler<InstallSnapshot<E>> +
-        Handler<GetCurrentSnapshot<E>>;
+    type Actor: Actor<Context = Self::Context>
+        + Handler<GetInitialState<E>>
+        + Handler<SaveHardState<E>>
+        + Handler<GetLogEntries<D, E>>
+        + Handler<AppendEntryToLog<D, E>>
+        + Handler<ReplicateToLog<D, E>>
+        + Handler<ApplyEntryToStateMachine<D, R, E>>
+        + Handler<ReplicateToStateMachine<D, E>>
+        + Handler<CreateSnapshot<E>>
+        + Handler<InstallSnapshot<E>>
+        + Handler<GetCurrentSnapshot<E>>;
 
     /// The type to use as the storage actor's context. Should be `Context<Self>` or `SyncContext<Self>`.
-    type Context: ActorContext +
-        ToEnvelope<Self::Actor, GetInitialState<E>> +
-        ToEnvelope<Self::Actor, SaveHardState<E>> +
-        ToEnvelope<Self::Actor, GetLogEntries<D, E>> +
-        ToEnvelope<Self::Actor, AppendEntryToLog<D, E>> +
-        ToEnvelope<Self::Actor, ReplicateToLog<D, E>> +
-        ToEnvelope<Self::Actor, ApplyEntryToStateMachine<D, R, E>> +
-        ToEnvelope<Self::Actor, ReplicateToStateMachine<D, E>> +
-        ToEnvelope<Self::Actor, CreateSnapshot<E>> +
-        ToEnvelope<Self::Actor, InstallSnapshot<E>> +
-        ToEnvelope<Self::Actor, GetCurrentSnapshot<E>>;
+    type Context: ActorContext
+        + ToEnvelope<Self::Actor, GetInitialState<E>>
+        + ToEnvelope<Self::Actor, SaveHardState<E>>
+        + ToEnvelope<Self::Actor, GetLogEntries<D, E>>
+        + ToEnvelope<Self::Actor, AppendEntryToLog<D, E>>
+        + ToEnvelope<Self::Actor, ReplicateToLog<D, E>>
+        + ToEnvelope<Self::Actor, ApplyEntryToStateMachine<D, R, E>>
+        + ToEnvelope<Self::Actor, ReplicateToStateMachine<D, E>>
+        + ToEnvelope<Self::Actor, CreateSnapshot<E>>
+        + ToEnvelope<Self::Actor, InstallSnapshot<E>>
+        + ToEnvelope<Self::Actor, GetCurrentSnapshot<E>>;
 }

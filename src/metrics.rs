@@ -19,10 +19,7 @@
 
 use actix::prelude::*;
 
-use crate::{
-    NodeId,
-    messages::MembershipConfig,
-};
+use crate::{messages::MembershipConfig, NodeId};
 
 /// All possible states of a Raft node.
 #[derive(Clone, Debug, PartialEq, Eq)]

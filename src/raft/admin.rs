@@ -2,18 +2,19 @@ use actix::prelude::*;
 use log::{error, info, warn};
 
 use crate::{
-    AppData, AppDataResponse, AppError,
     admin::{InitWithConfig, InitWithConfigError, ProposeConfigChange, ProposeConfigChangeError},
     common::UpdateCurrentLeader,
     messages::{ClientPayload, ClientPayloadResponse, MembershipConfig},
     network::RaftNetwork,
-    raft::{RaftState, Raft, ReplicationState, state::ConsensusState},
-    replication::{ReplicationStream},
+    raft::{state::ConsensusState, Raft, RaftState, ReplicationState},
+    replication::ReplicationStream,
     storage::{GetLogEntries, RaftStorage},
+    AppData, AppDataResponse, AppError,
 };
 
-
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<InitWithConfig> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<InitWithConfig> for Raft<D, R, E, N, S>
+{
     type Result = ResponseActFuture<Self, (), InitWithConfigError>;
 
     /// An admin message handler invoked exclusively for cluster formation.
@@ -52,7 +53,12 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
         // Build a new membership config from given init data & assign it as the new cluster
         // membership config in memory only.
-        self.membership = MembershipConfig{is_in_joint_consensus: false, members: msg.members, non_voters: vec![], removing: vec![]};
+        self.membership = MembershipConfig {
+            is_in_joint_consensus: false,
+            members: msg.members,
+            non_voters: vec![],
+            removing: vec![],
+        };
 
         // Become a candidate and start campaigning for leadership. If this node is the only node
         // in the cluster, then become leader without holding an election.
@@ -69,19 +75,28 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     }
 }
 
-
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // ProposeConfigChange ///////////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<ProposeConfigChange<D, R, E>> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<ProposeConfigChange<D, R, E>> for Raft<D, R, E, N, S>
+{
     type Result = ResponseActFuture<Self, (), ProposeConfigChangeError<D, R, E>>;
 
     /// An admin message handler invoked to trigger dynamic cluster configuration changes. See §6.
-    fn handle(&mut self, msg: ProposeConfigChange<D, R, E>, ctx: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: ProposeConfigChange<D, R, E>,
+        ctx: &mut Self::Context,
+    ) -> Self::Result {
         // Ensure the node is currently the cluster leader.
         let leader_state = match &mut self.state {
             RaftState::Leader(state) => state,
-            _ => return Box::new(fut::err(ProposeConfigChangeError::NodeNotLeader(self.current_leader.clone()))),
+            _ => {
+                return Box::new(fut::err(ProposeConfigChangeError::NodeNotLeader(
+                    self.current_leader.clone(),
+                )))
+            }
         };
 
         // Normalize the proposed config to ensure everything is valid.
@@ -93,34 +108,53 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // Update consensus state, for use in finalizing joint consensus.
         match &mut leader_state.consensus_state {
             // Merge with any current consensus state.
-            ConsensusState::Joint{new_nodes, is_committed} => {
+            ConsensusState::Joint {
+                new_nodes,
+                is_committed,
+            } => {
                 new_nodes.extend_from_slice(msg.add_members.as_slice());
                 *is_committed = false;
             }
             _ => {
-                leader_state.consensus_state = ConsensusState::Joint{new_nodes: msg.add_members.clone(), is_committed: false};
+                leader_state.consensus_state = ConsensusState::Joint {
+                    new_nodes: msg.add_members.clone(),
+                    is_committed: false,
+                };
             }
         }
 
         // Update current config.
         self.membership.is_in_joint_consensus = true;
-        self.membership.non_voters.extend_from_slice(msg.add_members.as_slice());
-        self.membership.removing.extend_from_slice(msg.remove_members.as_slice());
+        self.membership
+            .non_voters
+            .extend_from_slice(msg.add_members.as_slice());
+        self.membership
+            .removing
+            .extend_from_slice(msg.remove_members.as_slice());
 
         // Spawn new replication streams for new members. Track state as non voters so that they
         // can be updated to be normal members once all non-voters have been brought up-to-date.
         for target in msg.add_members {
             // Build the replication stream for the target member.
             let rs = ReplicationStream::new(
-                self.id, target, self.current_term, self.config.clone(),
-                self.last_log_index, self.last_log_term, self.commit_index,
-                ctx.address(), self.network.clone(), self.storage.clone().recipient::<GetLogEntries<D, E>>(),
+                self.id,
+                target,
+                self.current_term,
+                self.config.clone(),
+                self.last_log_index,
+                self.last_log_term,
+                self.commit_index,
+                ctx.address(),
+                self.network.clone(),
+                self.storage.clone().recipient::<GetLogEntries<D, E>>(),
             );
             let addr = rs.start(); // Start the actor on the same thread.
 
             // Retain the addr of the replication stream.
-            let state = ReplicationState{
-                addr, match_index: self.last_log_index, remove_after_commit: None,
+            let state = ReplicationState {
+                addr,
+                match_index: self.last_log_index,
+                remove_after_commit: None,
                 is_at_line_rate: true, // Line rate is always initialize to true.
             };
             leader_state.nodes.insert(target, state);
@@ -128,7 +162,13 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
         // For any nodes being removed which are currently non-voters, immediately remove them.
         for node in msg.remove_members {
-            if let Some((idx, _)) = self.membership.non_voters.iter().enumerate().find(|(_, e)| *e == &node) {
+            if let Some((idx, _)) = self
+                .membership
+                .non_voters
+                .iter()
+                .enumerate()
+                .find(|(_, e)| *e == &node)
+            {
                 leader_state.nodes.remove(&node); // Dropping the replication stream's addr will kill it.
                 self.membership.non_voters.remove(idx);
             }
@@ -138,24 +178,39 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         self.report_metrics(ctx);
 
         // Propose the config change to cluster.
-        Box::new(fut::wrap_future(ctx.address().send(ClientPayload::new_config(self.membership.clone())))
+        Box::new(
+            fut::wrap_future(
+                ctx.address()
+                    .send(ClientPayload::new_config(self.membership.clone())),
+            )
             .map_err(|_, _: &mut Self, _| ProposeConfigChangeError::Internal)
-            .and_then(|res, _, _| fut::result(res.map_err(|err| ProposeConfigChangeError::ClientError(err))))
-            .and_then(|res, act, ctx| act.handle_newly_committed_cluster_config(ctx, res))
+            .and_then(|res, _, _| {
+                fut::result(res.map_err(|err| ProposeConfigChangeError::ClientError(err)))
+            })
+            .and_then(|res, act, ctx| act.handle_newly_committed_cluster_config(ctx, res)),
         )
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Raft<D, R, E, N, S>
+{
     /// Handle response from a newly committed cluster config.
-    pub(super) fn handle_newly_committed_cluster_config(&mut self, ctx: &mut Context<Self>, _: ClientPayloadResponse<R>) -> impl ActorFuture<Actor=Self, Item=(), Error=ProposeConfigChangeError<D, R, E>> {
+    pub(super) fn handle_newly_committed_cluster_config(
+        &mut self,
+        ctx: &mut Context<Self>,
+        _: ClientPayloadResponse<R>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ProposeConfigChangeError<D, R, E>> {
         let leader_state = match &mut self.state {
             RaftState::Leader(state) => state,
             _ => return fut::ok(()),
         };
 
         match &mut leader_state.consensus_state {
-            ConsensusState::Joint{is_committed, new_nodes} => {
+            ConsensusState::Joint {
+                is_committed,
+                new_nodes,
+            } => {
                 *is_committed = true;
                 if new_nodes.len() == 0 {
                     self.finalize_joint_consensus(ctx);
@@ -175,9 +230,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // It is only safe to call this routine as leader & when in a joint consensus state.
         let leader_state = match &mut self.state {
             RaftState::Leader(state) => match &state.consensus_state {
-                ConsensusState::Joint{..} => state,
+                ConsensusState::Joint { .. } => state,
                 _ => return,
-            }
+            },
             _ => return,
         };
 
@@ -186,7 +241,13 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             self.membership.members.push(node);
         }
         for node in self.membership.removing.drain(..) {
-            if let Some((idx, _)) = self.membership.members.iter().enumerate().find(|(_, e)| *e == &node) {
+            if let Some((idx, _)) = self
+                .membership
+                .members
+                .iter()
+                .enumerate()
+                .find(|(_, e)| *e == &node)
+            {
                 self.membership.members.remove(idx);
             }
         }
@@ -202,21 +263,40 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // error, in which case the node will terminate, or if the node has transitioned out of
         // leadership state, in which case, another node will pick up the responsibility of
         // committing the updated config.
-        ctx.spawn(fut::wrap_future(ctx.address().send(ClientPayload::new_config(self.membership.clone())))
-            .map_err(|err, _, _| error!("Messaging error submitting client payload to finalize joint consensus. {:?}", err))
-            .and_then(|res, _, _| fut::result(res
-                .map_err(|err| error!("Error from submitting client payload to finalize joint consensus. {:?}", err))))
-            .and_then(|res, act: &mut Self, ctx| act.handle_joint_consensus_finalization(ctx, res))
+        ctx.spawn(
+            fut::wrap_future(
+                ctx.address()
+                    .send(ClientPayload::new_config(self.membership.clone())),
+            )
+            .map_err(|err, _, _| {
+                error!(
+                    "Messaging error submitting client payload to finalize joint consensus. {:?}",
+                    err
+                )
+            })
+            .and_then(|res, _, _| {
+                fut::result(res.map_err(|err| {
+                    error!(
+                        "Error from submitting client payload to finalize joint consensus. {:?}",
+                        err
+                    )
+                }))
+            })
+            .and_then(|res, act: &mut Self, ctx| act.handle_joint_consensus_finalization(ctx, res)),
         );
     }
 
-    pub(super) fn handle_joint_consensus_finalization(&mut self, ctx: &mut Context<Self>, res: ClientPayloadResponse<R>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    pub(super) fn handle_joint_consensus_finalization(
+        &mut self,
+        ctx: &mut Context<Self>,
+        res: ClientPayloadResponse<R>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         // It is only safe to call this routine as leader & when in a uniform consensus state.
         let leader_state = match &mut self.state {
             RaftState::Leader(state) => match &state.consensus_state {
                 ConsensusState::Uniform => state,
                 _ => return fut::ok(()),
-            }
+            },
             _ => return fut::ok(()),
         };
 
@@ -232,7 +312,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // cluster members. All other replication streams which are no longer cluster members, but
         // which have not yet replicated this config will be marked for removal.
         let membership = &self.membership;
-        let nodes_to_remove: Vec<_> = leader_state.nodes.iter_mut()
+        let nodes_to_remove: Vec<_> = leader_state
+            .nodes
+            .iter_mut()
             .filter(|(id, _)| !membership.contains(id))
             .filter_map(|(idx, replstate)| {
                 if replstate.match_index >= res.index() {
@@ -241,7 +323,8 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                     replstate.remove_after_commit = Some(res.index());
                     None
                 }
-            }).collect();
+            })
+            .collect();
         for node in nodes_to_remove {
             leader_state.nodes.remove(&node);
         }
@@ -262,14 +345,17 @@ fn normalize_init_config(msg: InitWithConfig) -> InitWithConfig {
         }
     }
 
-    InitWithConfig{members: nodes}
+    InitWithConfig { members: nodes }
 }
 
 /// Check the proposed config changes with the current config to ensure changes are valid.
 ///
 /// See the documentation on on `ProposeConfigChangeError` for the conditions which will cause
 /// errors to be returned.
-fn normalize_proposed_config<D: AppData, R: AppDataResponse, E: AppError>(mut msg: ProposeConfigChange<D, R, E>, current: &MembershipConfig) -> Result<ProposeConfigChange<D, R, E>, ProposeConfigChangeError<D, R, E>> {
+fn normalize_proposed_config<D: AppData, R: AppDataResponse, E: AppError>(
+    mut msg: ProposeConfigChange<D, R, E>,
+    current: &MembershipConfig,
+) -> Result<ProposeConfigChange<D, R, E>, ProposeConfigChangeError<D, R, E>> {
     // Ensure no duplicates in adding new nodes & ensure the new
     // node is not also be requested for removal.
     let mut new_nodes = vec![];

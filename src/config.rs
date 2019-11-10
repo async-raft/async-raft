@@ -1,11 +1,8 @@
 //! The Raft configuration module.
 
-use std::{
-    fs,
-    time::Duration,
-};
+use std::{fs, time::Duration};
 
-use log::{error};
+use log::error;
 use rand::{thread_rng, Rng};
 
 /// Default election timeout minimum.
@@ -109,7 +106,7 @@ impl Config {
     /// The directory where the log snapshots are to be kept for a Raft node is required and must
     /// be specified to start the config builder process.
     pub fn build(snapshot_dir: String) -> ConfigBuilder {
-        ConfigBuilder{
+        ConfigBuilder {
             election_timeout_min: None,
             election_timeout_max: None,
             heartbeat_interval: None,
@@ -193,13 +190,20 @@ impl ConfigBuilder {
     pub fn validate(self) -> Result<Config, ConfigError> {
         // Validate that `snapshot_dir` is a real location on disk, or attempt to create it.
         fs::create_dir_all(&self.snapshot_dir).map_err(|err| {
-            error!("Error while checking configured value for `snapshot_dir`. {}", err);
+            error!(
+                "Error while checking configured value for `snapshot_dir`. {}",
+                err
+            );
             ConfigError::InvalidSnapshotDir
         })?;
 
         // Roll a random election time out based on the configured min & max or their respective defaults.
-        let election_min = self.election_timeout_min.unwrap_or(DEFAULT_ELECTION_TIMEOUT_MIN);
-        let election_max = self.election_timeout_max.unwrap_or(DEFAULT_ELECTION_TIMEOUT_MAX);
+        let election_min = self
+            .election_timeout_min
+            .unwrap_or(DEFAULT_ELECTION_TIMEOUT_MIN);
+        let election_max = self
+            .election_timeout_max
+            .unwrap_or(DEFAULT_ELECTION_TIMEOUT_MAX);
         if election_min >= election_max {
             return Err(ConfigError::InvalidElectionTimeoutMinMax);
         }
@@ -208,18 +212,28 @@ impl ConfigBuilder {
         let election_timeout_millis = election_timeout as u64;
 
         // Get other values or their defaults.
-        let heartbeat_interval = self.heartbeat_interval.unwrap_or(DEFAULT_HEARTBEAT_INTERVAL) as u64;
-        let max_payload_entries = self.max_payload_entries.unwrap_or(DEFAULT_MAX_PAYLOAD_ENTRIES);
+        let heartbeat_interval = self
+            .heartbeat_interval
+            .unwrap_or(DEFAULT_HEARTBEAT_INTERVAL) as u64;
+        let max_payload_entries = self
+            .max_payload_entries
+            .unwrap_or(DEFAULT_MAX_PAYLOAD_ENTRIES);
         let metrics_rate = self.metrics_rate.unwrap_or(DEFAULT_METRICS_RATE);
-        let snapshot_policy = self.snapshot_policy.unwrap_or_else(|| SnapshotPolicy::default());
-        let snapshot_max_chunk_size = self.snapshot_max_chunk_size.unwrap_or(DEFAULT_SNAPSHOT_CHUNKSIZE);
+        let snapshot_policy = self
+            .snapshot_policy
+            .unwrap_or_else(|| SnapshotPolicy::default());
+        let snapshot_max_chunk_size = self
+            .snapshot_max_chunk_size
+            .unwrap_or(DEFAULT_SNAPSHOT_CHUNKSIZE);
 
-        Ok(Config{
+        Ok(Config {
             election_timeout_millis,
             heartbeat_interval,
             max_payload_entries,
             metrics_rate,
-            snapshot_dir: self.snapshot_dir, snapshot_policy, snapshot_max_chunk_size,
+            snapshot_dir: self.snapshot_dir,
+            snapshot_policy,
+            snapshot_max_chunk_size,
         })
     }
 }
@@ -278,7 +292,8 @@ mod tests {
             .metrics_rate(Duration::from_millis(20000))
             .snapshot_max_chunk_size(200)
             .snapshot_policy(SnapshotPolicy::Disabled)
-            .validate().unwrap();
+            .validate()
+            .unwrap();
 
         assert!(cfg.election_timeout_millis >= 100);
         assert!(cfg.election_timeout_millis <= 200);
@@ -293,7 +308,8 @@ mod tests {
 
     #[test]
     fn test_invalid_path_returns_expected_error() {
-        let res = Config::build("/dev/someinvalidpath/definitely/doesn't/exist".to_string()).validate();
+        let res =
+            Config::build("/dev/someinvalidpath/definitely/doesn't/exist".to_string()).validate();
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert_eq!(err, ConfigError::InvalidSnapshotDir);
@@ -304,7 +320,9 @@ mod tests {
         let dir = tempdir_in("/tmp").unwrap();
         let dirstring = dir.path().to_string_lossy().to_string();
         let res = Config::build(dirstring.clone())
-            .election_timeout_min(1000).election_timeout_max(700).validate();
+            .election_timeout_min(1000)
+            .election_timeout_max(700)
+            .validate();
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert_eq!(err, ConfigError::InvalidElectionTimeoutMinMax);

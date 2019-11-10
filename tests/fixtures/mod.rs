@@ -4,21 +4,18 @@
 pub mod dev;
 pub mod memory_storage;
 
-use std::{
-    collections::BTreeMap,
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use actix::prelude::*;
 use actix_raft::{
-    NodeId, Raft,
     config::{Config, SnapshotPolicy},
-    messages::{ClientPayload, ClientError, EntryNormal, ResponseMode},
+    messages::{ClientError, ClientPayload, EntryNormal, ResponseMode},
+    NodeId, Raft,
 };
 use async_log;
 use env_logger;
 use futures::sync::oneshot;
-use log::{debug};
+use log::debug;
 use tempfile::{tempdir_in, TempDir};
 
 use crate::fixtures::{
@@ -39,13 +36,20 @@ pub struct RaftTestController {
     pub network: Addr<RaftRouter>,
     pub nodes: BTreeMap<NodeId, Addr<MemRaft>>,
     initial_test_delay: Option<Duration>,
-    test_func: Option<Box<dyn FnOnce(&mut RaftTestController, &mut Context<RaftTestController>) + 'static>>,
+    test_func: Option<
+        Box<dyn FnOnce(&mut RaftTestController, &mut Context<RaftTestController>) + 'static>,
+    >,
 }
 
 impl RaftTestController {
     /// Create a new instance.
     pub fn new(network: Addr<RaftRouter>) -> Self {
-        Self{network, nodes: Default::default(), initial_test_delay: None, test_func: None}
+        Self {
+            network,
+            nodes: Default::default(),
+            initial_test_delay: None,
+            test_func: None,
+        }
     }
 
     /// Register a node on the test controller.
@@ -55,7 +59,11 @@ impl RaftTestController {
     }
 
     /// Start this test controller with the given delay and test function.
-    pub fn start_with_test(mut self, delay: u64, test: Box<dyn FnOnce(&mut RaftTestController, &mut Context<RaftTestController>) + 'static>) -> Addr<Self> {
+    pub fn start_with_test(
+        mut self,
+        delay: u64,
+        test: Box<dyn FnOnce(&mut RaftTestController, &mut Context<RaftTestController>) + 'static>,
+    ) -> Addr<Self> {
         self.initial_test_delay = Some(Duration::from_secs(delay));
         self.test_func = Some(test);
         self.start()
@@ -66,8 +74,14 @@ impl Actor for RaftTestController {
     type Context = Context<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        let initial_delay = self.initial_test_delay.take().expect("Test misconfigured. Missing `initial_test_delay`. Use `start_with_test`.");
-        let test_func = self.test_func.take().expect("Test misconfigured. Missing `test_func`. Use `start_with_test`.");
+        let initial_delay = self
+            .initial_test_delay
+            .take()
+            .expect("Test misconfigured. Missing `initial_test_delay`. Use `start_with_test`.");
+        let test_func = self
+            .test_func
+            .take()
+            .expect("Test misconfigured. Missing `test_func`. Use `start_with_test`.");
         ctx.run_later(initial_delay, test_func);
     }
 }
@@ -85,9 +99,16 @@ impl Handler<ClientRequest> for RaftTestController {
 
     fn handle(&mut self, mut msg: ClientRequest, ctx: &mut Self::Context) {
         if let Some(leader) = &msg.current_leader {
-            let entry = EntryNormal{data: MemoryStorageData{data: msg.payload.to_string().into_bytes()}};
+            let entry = EntryNormal {
+                data: MemoryStorageData {
+                    data: msg.payload.to_string().into_bytes(),
+                },
+            };
             let payload = Payload::new(entry, ResponseMode::Applied);
-            let node = self.nodes.get(leader).expect("Expected leader to be present it RaftTestController's nodes map.");
+            let node = self
+                .nodes
+                .get(leader)
+                .expect("Expected leader to be present it RaftTestController's nodes map.");
             let f = fut::wrap_future(node.send(payload))
                 .map_err(|_, _, _| ClientError::Internal).and_then(|res, _, _| fut::result(res))
                 .then(move |res, _, ctx: &mut Context<Self>| match res {
@@ -150,7 +171,13 @@ pub struct Node {
 impl Node {
     /// Start building a new node.
     pub fn builder(id: NodeId, network: Addr<RaftRouter>, members: Vec<NodeId>) -> NodeBuilder {
-        NodeBuilder{id, network, members, metrics_rate: None, snapshot_policy: None}
+        NodeBuilder {
+            id,
+            network,
+            members,
+            metrics_rate: None,
+            snapshot_policy: None,
+        }
     }
 }
 
@@ -174,18 +201,36 @@ impl NodeBuilder {
         let temp_dir = tempdir_in("/tmp").expect("Tempdir to be created without error.");
         let snapshot_dir = temp_dir.path().to_string_lossy().to_string();
         let config = Config::build(snapshot_dir.clone())
-            .election_timeout_min(1500).election_timeout_max(2000).heartbeat_interval(150)
+            .election_timeout_min(1500)
+            .election_timeout_max(2000)
+            .heartbeat_interval(150)
             .metrics_rate(Duration::from_secs(metrics_rate))
-            .snapshot_policy(snapshot_policy).snapshot_max_chunk_size(10000)
-            .validate().expect("Raft config to be created without error.");
+            .snapshot_policy(snapshot_policy)
+            .snapshot_max_chunk_size(10000)
+            .validate()
+            .expect("Raft config to be created without error.");
 
         let (storage_arb, raft_arb) = (Arbiter::new(), Arbiter::new());
-        let storage = MemoryStorage::start_in_arbiter(&storage_arb, |_| MemoryStorage::new(members, snapshot_dir));
+        let storage = MemoryStorage::start_in_arbiter(&storage_arb, |_| {
+            MemoryStorage::new(members, snapshot_dir)
+        });
         let storage_addr = storage.clone();
         let addr = Raft::start_in_arbiter(&raft_arb, move |_| {
-            Raft::new(id, config, network.clone(), storage.clone(), network.recipient())
+            Raft::new(
+                id,
+                config,
+                network.clone(),
+                storage.clone(),
+                network.recipient(),
+            )
         });
-        Node{addr, snapshot_dir: temp_dir, storage_arb, raft_arb, storage: storage_addr}
+        Node {
+            addr,
+            snapshot_dir: temp_dir,
+            storage_arb,
+            raft_arb,
+            storage: storage_addr,
+        }
     }
 
     /// Configure the metrics rate for this node, defaults to 1 second.
@@ -202,20 +247,43 @@ impl NodeBuilder {
 }
 
 /// Create a new Raft node for testing purposes.
-pub fn new_raft_node(id: NodeId, network: Addr<RaftRouter>, members: Vec<NodeId>, metrics_rate: u64) -> Node {
+pub fn new_raft_node(
+    id: NodeId,
+    network: Addr<RaftRouter>,
+    members: Vec<NodeId>,
+    metrics_rate: u64,
+) -> Node {
     let temp_dir = tempdir_in("/tmp").expect("Tempdir to be created without error.");
     let snapshot_dir = temp_dir.path().to_string_lossy().to_string();
     let config = Config::build(snapshot_dir.clone())
-        .election_timeout_min(1500).election_timeout_max(2000).heartbeat_interval(150)
+        .election_timeout_min(1500)
+        .election_timeout_max(2000)
+        .heartbeat_interval(150)
         .metrics_rate(Duration::from_secs(metrics_rate))
-        .snapshot_policy(SnapshotPolicy::Disabled).snapshot_max_chunk_size(10000)
-        .validate().expect("Raft config to be created without error.");
+        .snapshot_policy(SnapshotPolicy::Disabled)
+        .snapshot_max_chunk_size(10000)
+        .validate()
+        .expect("Raft config to be created without error.");
 
     let (storage_arb, raft_arb) = (Arbiter::new(), Arbiter::new());
-    let storage = MemoryStorage::start_in_arbiter(&storage_arb, |_| MemoryStorage::new(members, snapshot_dir));
+    let storage = MemoryStorage::start_in_arbiter(&storage_arb, |_| {
+        MemoryStorage::new(members, snapshot_dir)
+    });
     let storage_addr = storage.clone();
     let addr = Raft::start_in_arbiter(&raft_arb, move |_| {
-        Raft::new(id, config, network.clone(), storage.clone(), network.recipient())
+        Raft::new(
+            id,
+            config,
+            network.clone(),
+            storage.clone(),
+            network.recipient(),
+        )
     });
-    Node{addr, snapshot_dir: temp_dir, storage_arb, raft_arb, storage: storage_addr}
+    Node {
+        addr,
+        snapshot_dir: temp_dir,
+        storage_arb,
+        raft_arb,
+        storage: storage_addr,
+    }
 }

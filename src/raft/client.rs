@@ -1,18 +1,22 @@
 use actix::prelude::*;
-use log::{error};
 use futures::sync::oneshot;
+use log::error;
 
 use crate::{
-    AppData, AppDataResponse, AppError,
-    common::{CLIENT_RPC_RX_ERR, CLIENT_RPC_TX_ERR, ApplyLogsTask, ClientPayloadWithChan, DependencyAddr},
-    network::RaftNetwork,
+    common::{
+        ApplyLogsTask, ClientPayloadWithChan, DependencyAddr, CLIENT_RPC_RX_ERR, CLIENT_RPC_TX_ERR,
+    },
     messages::{ClientError, ClientPayload, ClientPayloadResponse, ResponseMode},
-    raft::{RaftState, Raft},
+    network::RaftNetwork,
+    raft::{Raft, RaftState},
     replication::RSReplicate,
     storage::{AppendEntryToLog, RaftStorage},
+    AppData, AppDataResponse, AppError,
 };
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<ClientPayload<D, R, E>> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<ClientPayload<D, R, E>> for Raft<D, R, E, N, S>
+{
     type Result = ResponseActFuture<Self, ClientPayloadResponse<R>, ClientError<D, R, E>>;
 
     /// Handle client requests.
@@ -22,35 +26,49 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             RaftState::Leader(state) => {
                 // Wrap the given message for async processing.
                 let (tx, rx) = oneshot::channel();
-                let with_chan = ClientPayloadWithChan{tx, rpc: msg};
-                let _ = state.client_request_queue.unbounded_send(with_chan).map_err(|_| {
-                    error!("Unexpected error while queueing client request for processing.")
-                });
+                let with_chan = ClientPayloadWithChan { tx, rpc: msg };
+                let _ = state
+                    .client_request_queue
+                    .unbounded_send(with_chan)
+                    .map_err(|_| {
+                        error!("Unexpected error while queueing client request for processing.")
+                    });
                 rx
-            },
+            }
             _ => {
-                return Box::new(fut::err(ClientError::ForwardToLeader{payload: msg, leader: self.current_leader}));
-            },
+                return Box::new(fut::err(ClientError::ForwardToLeader {
+                    payload: msg,
+                    leader: self.current_leader,
+                }));
+            }
         };
 
         // Build a response from the message's channel.
-        Box::new(fut::wrap_future(response_chan)
-            .map_err(|_, _: &mut Self, _| {
-                error!("{}", CLIENT_RPC_RX_ERR);
-                ClientError::Internal
-            })
-            .and_then(|res, _, _| fut::result(res)))
+        Box::new(
+            fut::wrap_future(response_chan)
+                .map_err(|_, _: &mut Self, _| {
+                    error!("{}", CLIENT_RPC_RX_ERR);
+                    ClientError::Internal
+                })
+                .and_then(|res, _, _| fut::result(res)),
+        )
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Raft<D, R, E, N, S>
+{
     /// Process the given client RPC, appending it to the log and committing it to the cluster.
     ///
     /// This function takes the given RPC, appends its entries to the log, sends the entries out
     /// to the replication streams to be replicated to the cluster followers, after half of the
     /// cluster members have successfully replicated the entries this routine will proceed with
     /// applying the entries to the state machine. Then the next RPC is processed.
-    pub(super) fn process_client_rpc(&mut self, _: &mut Context<Self>, msg: ClientPayloadWithChan<D, R, E>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    pub(super) fn process_client_rpc(
+        &mut self,
+        _: &mut Context<Self>,
+        msg: ClientPayloadWithChan<D, R, E>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         match &self.state {
             // If node is still leader, continue.
             RaftState::Leader(_) => (),

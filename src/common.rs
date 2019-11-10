@@ -5,11 +5,8 @@ use std::sync::Arc;
 use futures::sync::oneshot;
 
 use crate::{
+    messages::{ClientError, ClientPayload, ClientPayloadResponse, Entry, ResponseMode},
     AppData, AppDataResponse, AppError, NodeId,
-    messages::{
-        ClientError, ClientPayload, ClientPayloadResponse,
-        Entry, ResponseMode,
-    },
 };
 
 pub(crate) const CLIENT_RPC_RX_ERR: &str = "Client RPC channel receiver was unexpectedly closed.";
@@ -69,8 +66,18 @@ pub(crate) struct ClientPayloadWithIndex<D: AppData, R: AppDataResponse, E: AppE
 impl<D: AppData, R: AppDataResponse, E: AppError> ClientPayloadWithIndex<D, R, E> {
     /// Create a new instance.
     pub(self) fn new(payload: ClientPayloadWithChan<D, R, E>, index: u64, term: u64) -> Self {
-        let entry = Arc::new(Entry{index: index, term: term, payload: payload.rpc.entry.clone()});
-        Self{tx: payload.tx, entry, response_mode: payload.rpc.response_mode, index, term}
+        let entry = Arc::new(Entry {
+            index: index,
+            term: term,
+            payload: payload.rpc.entry.clone(),
+        });
+        Self {
+            tx: payload.tx,
+            entry,
+            response_mode: payload.rpc.response_mode,
+            index,
+            term,
+        }
     }
 
     /// Downgrade the payload, typically for forwarding purposes.
@@ -79,7 +86,10 @@ impl<D: AppData, R: AppDataResponse, E: AppError> ClientPayloadWithIndex<D, R, E
             Ok(entry) => entry.payload,
             Err(arc) => arc.payload.clone(),
         };
-        ClientPayloadWithChan{tx: self.tx, rpc: ClientPayload::new_base(entry, self.response_mode)}
+        ClientPayloadWithChan {
+            tx: self.tx,
+            rpc: ClientPayload::new_base(entry, self.response_mode),
+        }
     }
 
     /// Get a reference to the entry encapsulated by this payload.

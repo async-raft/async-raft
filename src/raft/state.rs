@@ -1,24 +1,25 @@
-
-use std::{
-    collections::BTreeMap,
-    fmt,
-};
+use std::{collections::BTreeMap, fmt};
 
 use actix::prelude::*;
 use futures::sync::{mpsc, oneshot};
 
 use crate::{
-    AppData, AppDataResponse, AppError, NodeId,
-    common::{ClientPayloadWithIndex, ClientPayloadWithChan},
-    messages::{MembershipConfig},
+    common::{ClientPayloadWithChan, ClientPayloadWithIndex},
+    messages::MembershipConfig,
     network::RaftNetwork,
-    replication::{ReplicationStream},
+    replication::ReplicationStream,
     storage::{InstallSnapshotChunk, RaftStorage},
+    AppData, AppDataResponse, AppError, NodeId,
 };
 
-
 /// The state of the Raft node.
-pub(crate) enum RaftState<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> {
+pub(crate) enum RaftState<
+    D: AppData,
+    R: AppDataResponse,
+    E: AppError,
+    N: RaftNetwork<D>,
+    S: RaftStorage<D, R, E>,
+> {
     /// A non-standard Raft state indicating that the node is initializing.
     Initializing,
     /// The node is completely passive; replicating entries, but not voting or timing out.
@@ -52,7 +53,9 @@ pub(crate) enum RaftState<D: AppData, R: AppDataResponse, E: AppError, N: RaftNe
     Leader(LeaderState<D, R, E, N, S>),
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> RaftState<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    RaftState<D, R, E, N, S>
+{
     /// Check if currently in follower state.
     pub fn is_follower(&self) -> bool {
         match self {
@@ -79,7 +82,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> fmt::Display for RaftState<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    fmt::Display for RaftState<D, R, E, N, S>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let state = match self {
             RaftState::Initializing => "Initializing",
@@ -95,7 +100,13 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 /// Volatile state specific to the Raft leader.
 ///
 /// This state is reinitialized after an election.
-pub(crate) struct LeaderState<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> {
+pub(crate) struct LeaderState<
+    D: AppData,
+    R: AppDataResponse,
+    E: AppError,
+    N: RaftNetwork<D>,
+    S: RaftStorage<D, R, E>,
+> {
     /// A mapping of node IDs the replication state of the target node.
     pub nodes: BTreeMap<NodeId, ReplicationState<D, R, E, N, S>>,
     /// A queue of client requests to be processed.
@@ -106,23 +117,39 @@ pub(crate) struct LeaderState<D: AppData, R: AppDataResponse, E: AppError, N: Ra
     pub consensus_state: ConsensusState,
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> LeaderState<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    LeaderState<D, R, E, N, S>
+{
     /// Create a new instance.
-    pub fn new(tx: mpsc::UnboundedSender<ClientPayloadWithChan<D, R, E>>, membership: &MembershipConfig) -> Self {
+    pub fn new(
+        tx: mpsc::UnboundedSender<ClientPayloadWithChan<D, R, E>>,
+        membership: &MembershipConfig,
+    ) -> Self {
         let consensus_state = if membership.is_in_joint_consensus {
-            ConsensusState::Joint{
+            ConsensusState::Joint {
                 new_nodes: membership.non_voters.clone(),
                 is_committed: false,
             }
         } else {
             ConsensusState::Uniform
         };
-        Self{nodes: Default::default(), client_request_queue: tx, awaiting_committed: vec![], consensus_state}
+        Self {
+            nodes: Default::default(),
+            client_request_queue: tx,
+            awaiting_committed: vec![],
+            consensus_state,
+        }
     }
 }
 
 /// A struct tracking the state of a replication stream from the perspective of the Raft actor.
-pub(crate) struct ReplicationState<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> {
+pub(crate) struct ReplicationState<
+    D: AppData,
+    R: AppDataResponse,
+    E: AppError,
+    N: RaftNetwork<D>,
+    S: RaftStorage<D, R, E>,
+> {
     pub match_index: u64,
     pub is_at_line_rate: bool,
     pub remove_after_commit: Option<u64>,
@@ -141,7 +168,7 @@ pub(crate) enum ConsensusState {
         /// NOTE: when a new leader is elected, it will initialize this value to false, and then
         /// update this value to true once the new leader's blank payload has been committed.
         is_committed: bool,
-    }
+    },
 }
 
 /// Volatile state specific to a Raft node in candidate state.
@@ -175,7 +202,9 @@ pub(crate) struct FollowerState {
 
 impl Default for FollowerState {
     fn default() -> Self {
-        Self{snapshot_state: SnapshotState::Idle}
+        Self {
+            snapshot_state: SnapshotState::Idle,
+        }
     }
 }
 
@@ -184,5 +213,8 @@ pub(crate) enum SnapshotState {
     /// No snapshot operations are taking place.
     Idle,
     /// The Raft node is streaming in a snapshot from the leader.
-    Streaming(Option<mpsc::UnboundedSender<InstallSnapshotChunk>>, Option<oneshot::Receiver<()>>),
+    Streaming(
+        Option<mpsc::UnboundedSender<InstallSnapshotChunk>>,
+        Option<oneshot::Receiver<()>>,
+    ),
 }

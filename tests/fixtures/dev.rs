@@ -1,29 +1,28 @@
 //! Development and testing utilities.
 
-use std::{
-    collections::BTreeMap,
-    time::Duration,
-};
+use std::{collections::BTreeMap, time::Duration};
 
 use actix::prelude::*;
 use actix_raft::{
-    Raft, NodeId,
     messages::{
-        AppendEntriesRequest, AppendEntriesResponse,
-        InstallSnapshotRequest, InstallSnapshotResponse,
-        VoteRequest, VoteResponse,
+        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
+        InstallSnapshotResponse, VoteRequest, VoteResponse,
     },
-    network::RaftNetwork,
     metrics::{RaftMetrics, State},
+    network::RaftNetwork,
+    NodeId, Raft,
 };
-use log::{debug};
+use log::debug;
 
-use crate::fixtures::memory_storage::{MemoryStorage, MemoryStorageData, MemoryStorageError, MemoryStorageResponse};
+use crate::fixtures::memory_storage::{
+    MemoryStorage, MemoryStorageData, MemoryStorageError, MemoryStorageResponse,
+};
 
 const ERR_ROUTING_FAILURE: &str = "Routing failures are not allowed in tests.";
 
 /// A concrete Raft type used during testing.
-pub type MemRaft = Raft<MemoryStorageData, MemoryStorageResponse, MemoryStorageError, RaftRouter, MemoryStorage>;
+pub type MemRaft =
+    Raft<MemoryStorageData, MemoryStorageResponse, MemoryStorageError, RaftRouter, MemoryStorage>;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RaftRouter ////////////////////////////////////////////////////////////////////////////////////
@@ -53,7 +52,12 @@ impl RaftRouter {
 
     /// Restore the network of the specified node.
     pub fn restore_node(&mut self, id: NodeId) {
-        if let Some((idx, _)) = self.isolated_nodes.iter().enumerate().find(|(_, e)| *e == &id) {
+        if let Some((idx, _)) = self
+            .isolated_nodes
+            .iter()
+            .enumerate()
+            .find(|(_, e)| *e == &id)
+        {
             debug!("Restoring network for node {}.", &id);
             self.isolated_nodes.remove(idx);
         }
@@ -65,7 +69,10 @@ impl Actor for RaftRouter {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         ctx.run_interval(Duration::from_secs(1), |act, _| {
-            debug!("RaftRouter [AppendEntries={}, Vote={}, InstallSnapshot={}, Other={}]", act.routed.0, act.routed.1, act.routed.2, act.routed.3);
+            debug!(
+                "RaftRouter [AppendEntries={}, Vote={}, InstallSnapshot={}, Other={}]",
+                act.routed.0, act.routed.1, act.routed.2, act.routed.3
+            );
         });
     }
 }
@@ -78,15 +85,22 @@ impl RaftNetwork<MemoryStorageData> for RaftRouter {}
 impl Handler<AppendEntriesRequest<MemoryStorageData>> for RaftRouter {
     type Result = ResponseActFuture<Self, AppendEntriesResponse, ()>;
 
-    fn handle(&mut self, msg: AppendEntriesRequest<MemoryStorageData>, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: AppendEntriesRequest<MemoryStorageData>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         self.routed.0 += 1;
         let addr = self.routing_table.get(&msg.target).unwrap();
-        if self.isolated_nodes.contains(&msg.target) || self.isolated_nodes.contains(&msg.leader_id) {
+        if self.isolated_nodes.contains(&msg.target) || self.isolated_nodes.contains(&msg.leader_id)
+        {
             return Box::new(fut::err(()));
         }
-        Box::new(fut::wrap_future(addr.send(msg))
-            .map_err(|_, _, _| panic!(ERR_ROUTING_FAILURE))
-            .and_then(|res, _, _| fut::result(res)))
+        Box::new(
+            fut::wrap_future(addr.send(msg))
+                .map_err(|_, _, _| panic!(ERR_ROUTING_FAILURE))
+                .and_then(|res, _, _| fut::result(res)),
+        )
     }
 }
 
@@ -96,12 +110,16 @@ impl Handler<VoteRequest> for RaftRouter {
     fn handle(&mut self, msg: VoteRequest, _: &mut Self::Context) -> Self::Result {
         self.routed.1 += 1;
         let addr = self.routing_table.get(&msg.target).unwrap();
-        if self.isolated_nodes.contains(&msg.target) || self.isolated_nodes.contains(&msg.candidate_id) {
+        if self.isolated_nodes.contains(&msg.target)
+            || self.isolated_nodes.contains(&msg.candidate_id)
+        {
             return Box::new(fut::err(()));
         }
-        Box::new(fut::wrap_future(addr.send(msg))
-            .map_err(|_, _, _| panic!(ERR_ROUTING_FAILURE))
-            .and_then(|res, _, _| fut::result(res)))
+        Box::new(
+            fut::wrap_future(addr.send(msg))
+                .map_err(|_, _, _| panic!(ERR_ROUTING_FAILURE))
+                .and_then(|res, _, _| fut::result(res)),
+        )
     }
 }
 
@@ -111,12 +129,15 @@ impl Handler<InstallSnapshotRequest> for RaftRouter {
     fn handle(&mut self, msg: InstallSnapshotRequest, _: &mut Self::Context) -> Self::Result {
         self.routed.2 += 1;
         let addr = self.routing_table.get(&msg.target).unwrap();
-        if self.isolated_nodes.contains(&msg.target) || self.isolated_nodes.contains(&msg.leader_id) {
+        if self.isolated_nodes.contains(&msg.target) || self.isolated_nodes.contains(&msg.leader_id)
+        {
             return Box::new(fut::err(()));
         }
-        Box::new(fut::wrap_future(addr.send(msg))
-            .map_err(|_, _, _| panic!(ERR_ROUTING_FAILURE))
-            .and_then(|res, _, _| fut::result(res)))
+        Box::new(
+            fut::wrap_future(addr.send(msg))
+                .map_err(|_, _, _| panic!(ERR_ROUTING_FAILURE))
+                .and_then(|res, _, _| fut::result(res)),
+        )
     }
 }
 
@@ -155,14 +176,22 @@ impl Handler<GetCurrentLeader> for RaftRouter {
 
     fn handle(&mut self, _: GetCurrentLeader, _: &mut Self::Context) -> Self::Result {
         self.routed.3 += 1;
-        let leader_opt = self.metrics.values()
+        let leader_opt = self
+            .metrics
+            .values()
             .filter(|e| !self.isolated_nodes.contains(&e.id))
             .find(|e| &e.state == &State::Leader);
 
         if let Some(leader) = leader_opt {
-            let has_consensus = self.metrics.values()
-                .filter(|e| !self.isolated_nodes.contains(&e.id) && leader.membership_config.contains(&e.id))
-                .all(|e| e.current_leader == Some(leader.id) && e.current_term == leader.current_term);
+            let has_consensus = self
+                .metrics
+                .values()
+                .filter(|e| {
+                    !self.isolated_nodes.contains(&e.id) && leader.membership_config.contains(&e.id)
+                })
+                .all(|e| {
+                    e.current_leader == Some(leader.id) && e.current_term == leader.current_term
+                });
 
             if has_consensus {
                 Ok(Some(leader.id))
@@ -211,7 +240,9 @@ impl Handler<RemoveNodeFromCluster> for RaftRouter {
 
     fn handle(&mut self, msg: RemoveNodeFromCluster, _: &mut Self::Context) -> Self::Result {
         self.routed.3 += 1;
-        let leader_opt = self.metrics.values()
+        let leader_opt = self
+            .metrics
+            .values()
             .filter(|e| !self.isolated_nodes.contains(&e.id))
             .find(|e| &e.state == &State::Leader);
 
@@ -219,23 +250,34 @@ impl Handler<RemoveNodeFromCluster> for RaftRouter {
             let leader_knows_target = leader.membership_config.contains(&msg.id);
             if !leader_knows_target {
                 self.routing_table.remove(&msg.id);
-                if let Some((idx, _)) = self.isolated_nodes.iter().enumerate().find(|(_, e)| *e == &msg.id) {
+                if let Some((idx, _)) = self
+                    .isolated_nodes
+                    .iter()
+                    .enumerate()
+                    .find(|(_, e)| *e == &msg.id)
+                {
                     self.isolated_nodes.remove(idx);
                 }
                 self.metrics.remove(&msg.id);
                 Ok(())
             } else {
-                Err(String::from("Cluster leader has the target node in its current config."))
+                Err(String::from(
+                    "Cluster leader has the target node in its current config.",
+                ))
             }
         } else {
-            Err(String::from("Cluster has no current leader, can not verify that it is safe to remove node."))
+            Err(String::from(
+                "Cluster has no current leader, can not verify that it is safe to remove node.",
+            ))
         }
     }
 }
 
 // ExecuteInRaftRouter ///////////////////////////////////////////////////////
 
-pub struct ExecuteInRaftRouter(pub Box<dyn FnOnce(&mut RaftRouter, &mut Context<RaftRouter>) + Send + 'static>);
+pub struct ExecuteInRaftRouter(
+    pub Box<dyn FnOnce(&mut RaftRouter, &mut Context<RaftRouter>) + Send + 'static>,
+);
 
 impl Message for ExecuteInRaftRouter {
     type Result = Result<(), ()>;

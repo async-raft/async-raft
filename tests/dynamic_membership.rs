@@ -6,17 +6,17 @@ use std::time::{Duration, Instant};
 
 use actix::prelude::*;
 use actix_raft::{
-    admin::{ProposeConfigChange},
+    admin::ProposeConfigChange,
     messages::{ClientError, EntryNormal, ResponseMode},
-    metrics::{State},
+    metrics::State,
 };
-use log::{error};
+use log::error;
 use tokio_timer::Delay;
 
 use fixtures::{
-    Payload, RaftTestController, Node, setup_logger,
     dev::{ExecuteInRaftRouter, GetCurrentLeader, RaftRouter, Register, RemoveNodeFromCluster},
     memory_storage::MemoryStorageData,
+    setup_logger, Node, Payload, RaftTestController,
 };
 
 /// Dynamic cluster membership test.
@@ -42,15 +42,26 @@ fn dynamic_membership() {
     let network = net.start();
     let members = vec![0, 1, 2];
     let node0 = Node::builder(0, network.clone(), members.clone()).build();
-    network.do_send(Register{id: 0, addr: node0.addr.clone()});
+    network.do_send(Register {
+        id: 0,
+        addr: node0.addr.clone(),
+    });
     let node1 = Node::builder(1, network.clone(), members.clone()).build();
-    network.do_send(Register{id: 1, addr: node1.addr.clone()});
+    network.do_send(Register {
+        id: 1,
+        addr: node1.addr.clone(),
+    });
     let node2 = Node::builder(2, network.clone(), members.clone()).build();
-    network.do_send(Register{id: 2, addr: node2.addr.clone()});
+    network.do_send(Register {
+        id: 2,
+        addr: node2.addr.clone(),
+    });
 
     // Setup test controller and actions.
     let mut ctl = RaftTestController::new(network);
-    ctl.register(0, node0.addr.clone()).register(1, node1.addr.clone()).register(2, node2.addr.clone());
+    ctl.register(0, node0.addr.clone())
+        .register(1, node1.addr.clone())
+        .register(2, node2.addr.clone());
     ctl.start_with_test(10, Box::new(|act, ctx| {
         let task = act.write_data(ctx)
             // Data has been writtent to new cluster, get the ID of the current leader.
@@ -136,19 +147,31 @@ fn dynamic_membership() {
 }
 
 impl RaftTestController {
-    fn write_data(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    fn write_data(
+        &mut self,
+        _: &mut Context<Self>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         fut::wrap_future(self.network.send(GetCurrentLeader))
             .map_err(|_, _: &mut Self, _| panic!("Failed to get current leader."))
             .and_then(|res, _, _| fut::result(res))
             .and_then(|current_leader, act, _| {
                 let num_requests = 100;
-                let leader_id = current_leader.expect("Expected to find a current cluster leader for writing client requests.");
-                let addr = act.nodes.get(&leader_id).expect("Expected leader to be present it RaftTestController's nodes map.");
+                let leader_id = current_leader.expect(
+                    "Expected to find a current cluster leader for writing client requests.",
+                );
+                let addr = act
+                    .nodes
+                    .get(&leader_id)
+                    .expect("Expected leader to be present it RaftTestController's nodes map.");
                 let leader = addr.clone();
 
                 fut::wrap_stream(futures::stream::iter_ok(0..num_requests))
                     .and_then(move |data, _, _| {
-                        let entry = EntryNormal{data: MemoryStorageData{data: data.to_string().into_bytes()}};
+                        let entry = EntryNormal {
+                            data: MemoryStorageData {
+                                data: data.to_string().into_bytes(),
+                            },
+                        };
                         let payload = Payload::new(entry, ResponseMode::Applied);
                         fut::wrap_future(leader.clone().send(payload))
                             .map_err(|_, _, _| ClientError::Internal)

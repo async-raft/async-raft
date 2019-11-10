@@ -1,34 +1,23 @@
 use std::{
     collections::BTreeMap,
-    io::{Seek, SeekFrom, Write},
     fs::{self, File},
+    io::{Seek, SeekFrom, Write},
     path::PathBuf,
 };
 
 use actix::prelude::*;
 use log::{debug, error};
-use serde::{Serialize, Deserialize};
 use rmp_serde as rmps;
+use serde::{Deserialize, Serialize};
 
 use actix_raft::{
-    AppData, AppDataResponse, AppError, NodeId,
     messages::{Entry as RaftEntry, EntrySnapshotPointer, MembershipConfig},
     storage::{
-        AppendEntryToLog,
-        ReplicateToLog,
-        ApplyEntryToStateMachine,
-        ReplicateToStateMachine,
-        CreateSnapshot,
-        CurrentSnapshotData,
-        GetCurrentSnapshot,
-        GetInitialState,
-        GetLogEntries,
-        HardState,
-        InitialState,
-        InstallSnapshot,
-        RaftStorage,
-        SaveHardState,
+        AppendEntryToLog, ApplyEntryToStateMachine, CreateSnapshot, CurrentSnapshotData,
+        GetCurrentSnapshot, GetInitialState, GetLogEntries, HardState, InitialState,
+        InstallSnapshot, RaftStorage, ReplicateToLog, ReplicateToStateMachine, SaveHardState,
     },
+    AppData, AppDataResponse, AppError, NodeId,
 };
 
 type Entry = RaftEntry<MemoryStorageData>;
@@ -82,13 +71,25 @@ impl MemoryStorage {
     /// Create a new instance.
     pub fn new(members: Vec<NodeId>, snapshot_dir: String) -> Self {
         let snapshot_dir_pathbuf = std::path::PathBuf::from(snapshot_dir.clone());
-        let membership = MembershipConfig{members, non_voters: vec![], removing: vec![], is_in_joint_consensus: false};
-        Self{
-            hs: HardState{current_term: 0, voted_for: None, membership},
+        let membership = MembershipConfig {
+            members,
+            non_voters: vec![],
+            removing: vec![],
+            is_in_joint_consensus: false,
+        };
+        Self {
+            hs: HardState {
+                current_term: 0,
+                voted_for: None,
+                membership,
+            },
             log: Default::default(),
-            snapshot_data: None, snapshot_dir,
+            snapshot_data: None,
+            snapshot_dir,
             state_machine: Default::default(),
-            snapshot_actor: SyncArbiter::start(1, move || SnapshotActor(snapshot_dir_pathbuf.clone())),
+            snapshot_actor: SyncArbiter::start(1, move || {
+                SnapshotActor(snapshot_dir_pathbuf.clone())
+            }),
         }
     }
 }
@@ -108,8 +109,12 @@ impl RaftStorage<MemoryStorageData, MemoryStorageResponse, MemoryStorageError> f
 impl Handler<GetInitialState<MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, InitialState, MemoryStorageError>;
 
-    fn handle(&mut self, _: GetInitialState<MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
-        Box::new(fut::ok(InitialState{
+    fn handle(
+        &mut self,
+        _: GetInitialState<MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
+        Box::new(fut::ok(InitialState {
             last_log_index: self.log.iter().last().map(|e| *e.0).unwrap_or(0),
             last_log_term: self.log.iter().last().map(|e| e.1.term).unwrap_or(0),
             last_applied_log: self.state_machine.iter().last().map(|e| *e.0).unwrap_or(0),
@@ -121,7 +126,11 @@ impl Handler<GetInitialState<MemoryStorageError>> for MemoryStorage {
 impl Handler<SaveHardState<MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, (), MemoryStorageError>;
 
-    fn handle(&mut self, msg: SaveHardState<MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: SaveHardState<MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         self.hs = msg.hs;
         Box::new(fut::ok(()))
     }
@@ -130,15 +139,28 @@ impl Handler<SaveHardState<MemoryStorageError>> for MemoryStorage {
 impl Handler<GetLogEntries<MemoryStorageData, MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, Vec<Entry>, MemoryStorageError>;
 
-    fn handle(&mut self, msg: GetLogEntries<MemoryStorageData, MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
-        Box::new(fut::ok(self.log.range(msg.start..msg.stop).map(|e| e.1.clone()).collect()))
+    fn handle(
+        &mut self,
+        msg: GetLogEntries<MemoryStorageData, MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
+        Box::new(fut::ok(
+            self.log
+                .range(msg.start..msg.stop)
+                .map(|e| e.1.clone())
+                .collect(),
+        ))
     }
 }
 
 impl Handler<AppendEntryToLog<MemoryStorageData, MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, (), MemoryStorageError>;
 
-    fn handle(&mut self, msg: AppendEntryToLog<MemoryStorageData, MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: AppendEntryToLog<MemoryStorageData, MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         self.log.insert(msg.entry.index, (*msg.entry).clone());
         Box::new(fut::ok(()))
     }
@@ -147,7 +169,11 @@ impl Handler<AppendEntryToLog<MemoryStorageData, MemoryStorageError>> for Memory
 impl Handler<ReplicateToLog<MemoryStorageData, MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, (), MemoryStorageError>;
 
-    fn handle(&mut self, msg: ReplicateToLog<MemoryStorageData, MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: ReplicateToLog<MemoryStorageData, MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         msg.entries.iter().for_each(|e| {
             self.log.insert(e.index, e.clone());
         });
@@ -155,11 +181,20 @@ impl Handler<ReplicateToLog<MemoryStorageData, MemoryStorageError>> for MemorySt
     }
 }
 
-impl Handler<ApplyEntryToStateMachine<MemoryStorageData, MemoryStorageResponse, MemoryStorageError>> for MemoryStorage {
+impl Handler<ApplyEntryToStateMachine<MemoryStorageData, MemoryStorageResponse, MemoryStorageError>>
+    for MemoryStorage
+{
     type Result = ResponseActFuture<Self, MemoryStorageResponse, MemoryStorageError>;
 
-    fn handle(&mut self, msg: ApplyEntryToStateMachine<MemoryStorageData, MemoryStorageResponse, MemoryStorageError>, _ctx: &mut Self::Context) -> Self::Result {
-        let res = if let Some(old) = self.state_machine.insert(msg.payload.index, (*msg.payload).clone()) {
+    fn handle(
+        &mut self,
+        msg: ApplyEntryToStateMachine<MemoryStorageData, MemoryStorageResponse, MemoryStorageError>,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
+        let res = if let Some(old) = self
+            .state_machine
+            .insert(msg.payload.index, (*msg.payload).clone())
+        {
             error!("Critical error. State machine entires are not allowed to be overwritten. Entry: {:?}", old);
             Err(MemoryStorageError)
         } else {
@@ -172,7 +207,11 @@ impl Handler<ApplyEntryToStateMachine<MemoryStorageData, MemoryStorageResponse, 
 impl Handler<ReplicateToStateMachine<MemoryStorageData, MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, (), MemoryStorageError>;
 
-    fn handle(&mut self, msg: ReplicateToStateMachine<MemoryStorageData, MemoryStorageError>, _ctx: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: ReplicateToStateMachine<MemoryStorageData, MemoryStorageError>,
+        _ctx: &mut Self::Context,
+    ) -> Self::Result {
         let res = msg.payload.iter().try_for_each(|e| {
             if let Some(old) = self.state_machine.insert(e.index, e.clone()) {
                 error!("Critical error. State machine entires are not allowed to be overwritten. Entry: {:?}", old);
@@ -187,11 +226,22 @@ impl Handler<ReplicateToStateMachine<MemoryStorageData, MemoryStorageError>> for
 impl Handler<CreateSnapshot<MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, CurrentSnapshotData, MemoryStorageError>;
 
-    fn handle(&mut self, msg: CreateSnapshot<MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
-        debug!("Creating new snapshot under '{}' through index {}.", &self.snapshot_dir, &msg.through);
+    fn handle(
+        &mut self,
+        msg: CreateSnapshot<MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
+        debug!(
+            "Creating new snapshot under '{}' through index {}.",
+            &self.snapshot_dir, &msg.through
+        );
         // Serialize snapshot data.
         let through = msg.through;
-        let entries = self.log.range(0u64..=through).map(|(_, v)| v.clone()).collect::<Vec<_>>();
+        let entries = self
+            .log
+            .range(0u64..=through)
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<_>>();
         debug!("Creating snapshot with {} entries.", entries.len());
         let (index, term) = entries.last().map(|e| (e.index, e.term)).unwrap_or((0, 0));
         let snapdata = match rmps::to_vec(&entries) {
@@ -205,7 +255,11 @@ impl Handler<CreateSnapshot<MemoryStorageError>> for MemoryStorage {
         // Create snapshot file and write snapshot data to it.
         let filename = format!("{}", msg.through);
         let filepath = std::path::PathBuf::from(self.snapshot_dir.clone()).join(filename);
-        Box::new(fut::wrap_future(self.snapshot_actor.send(CreateSnapshotWithData(filepath.clone(), snapdata)))
+        Box::new(
+            fut::wrap_future(
+                self.snapshot_actor
+                    .send(CreateSnapshotWithData(filepath.clone(), snapdata)),
+            )
             .map_err(|err, _, _| panic!("Error communicating with snapshot actor. {}", err))
             .and_then(|res, _, _| fut::result(res))
             // Clean up old log entries which are now part of the new snapshot.
@@ -213,59 +267,79 @@ impl Handler<CreateSnapshot<MemoryStorageError>> for MemoryStorage {
                 let path = filepath.to_string_lossy().to_string();
                 debug!("Finished creating snapshot file at {}", &path);
                 act.log = act.log.split_off(&through);
-                let pointer = EntrySnapshotPointer{path};
+                let pointer = EntrySnapshotPointer { path };
                 let entry = Entry::new_snapshot_pointer(pointer.clone(), index, term);
                 act.log.insert(through, entry);
 
                 // Cache the most recent snapshot data.
-                let current_snap_data = CurrentSnapshotData{term, index, membership: act.hs.membership.clone(), pointer};
+                let current_snap_data = CurrentSnapshotData {
+                    term,
+                    index,
+                    membership: act.hs.membership.clone(),
+                    pointer,
+                };
                 act.snapshot_data = Some(current_snap_data.clone());
 
                 fut::ok(current_snap_data)
-            }))
+            }),
+        )
     }
 }
 
 impl Handler<InstallSnapshot<MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, (), MemoryStorageError>;
 
-    fn handle(&mut self, msg: InstallSnapshot<MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        msg: InstallSnapshot<MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         let (index, term) = (msg.index, msg.term);
-        Box::new(fut::wrap_future(self.snapshot_actor.send(SyncInstallSnapshot(msg)))
-            .map_err(|err, _, _| panic!("Error communicating with snapshot actor. {}", err))
-            .and_then(|res, _, _| fut::result(res))
+        Box::new(
+            fut::wrap_future(self.snapshot_actor.send(SyncInstallSnapshot(msg)))
+                .map_err(|err, _, _| panic!("Error communicating with snapshot actor. {}", err))
+                .and_then(|res, _, _| fut::result(res))
+                // Snapshot file has been created. Perform final steps of this algorithm.
+                .and_then(move |pointer, act: &mut Self, ctx| {
+                    // Cache the most recent snapshot data.
+                    act.snapshot_data = Some(CurrentSnapshotData {
+                        index,
+                        term,
+                        membership: act.hs.membership.clone(),
+                        pointer: pointer.clone(),
+                    });
 
-            // Snapshot file has been created. Perform final steps of this algorithm.
-            .and_then(move |pointer, act: &mut Self, ctx| {
-                // Cache the most recent snapshot data.
-                act.snapshot_data = Some(CurrentSnapshotData{index, term, membership: act.hs.membership.clone(), pointer: pointer.clone()});
+                    // Update target index with the new snapshot pointer.
+                    let entry = Entry::new_snapshot_pointer(pointer.clone(), index, term);
+                    act.log = act.log.split_off(&index);
+                    let previous = act.log.insert(index, entry);
 
-                // Update target index with the new snapshot pointer.
-                let entry = Entry::new_snapshot_pointer(pointer.clone(), index, term);
-                act.log = act.log.split_off(&index);
-                let previous = act.log.insert(index, entry);
-
-                // If there are any logs newer than `index`, then we are done. Else, the state
-                // machine should be reset, and recreated from the new snapshot.
-                match &previous {
-                    Some(entry) if entry.index == index && entry.term == term => {
-                        fut::Either::A(fut::ok(()))
+                    // If there are any logs newer than `index`, then we are done. Else, the state
+                    // machine should be reset, and recreated from the new snapshot.
+                    match &previous {
+                        Some(entry) if entry.index == index && entry.term == term => {
+                            fut::Either::A(fut::ok(()))
+                        }
+                        // There are no newer entries in the log, which means that we need to rebuild
+                        // the state machine. Open the snapshot file read out its entries.
+                        _ => {
+                            let pathbuf = PathBuf::from(pointer.path);
+                            fut::Either::B(act.rebuild_state_machine_from_snapshot(ctx, pathbuf))
+                        }
                     }
-                    // There are no newer entries in the log, which means that we need to rebuild
-                    // the state machine. Open the snapshot file read out its entries.
-                    _ => {
-                        let pathbuf = PathBuf::from(pointer.path);
-                        fut::Either::B(act.rebuild_state_machine_from_snapshot(ctx, pathbuf))
-                    }
-                }
-            }))
+                }),
+        )
     }
 }
 
 impl Handler<GetCurrentSnapshot<MemoryStorageError>> for MemoryStorage {
     type Result = ResponseActFuture<Self, Option<CurrentSnapshotData>, MemoryStorageError>;
 
-    fn handle(&mut self, _: GetCurrentSnapshot<MemoryStorageError>, _: &mut Self::Context) -> Self::Result {
+    fn handle(
+        &mut self,
+        _: GetCurrentSnapshot<MemoryStorageError>,
+        _: &mut Self::Context,
+    ) -> Self::Result {
         debug!("Checking for current snapshot.");
         Box::new(fut::ok(self.snapshot_data.clone()))
     }
@@ -273,7 +347,11 @@ impl Handler<GetCurrentSnapshot<MemoryStorageError>> for MemoryStorage {
 
 impl MemoryStorage {
     /// Rebuild the state machine from the specified snapshot.
-    fn rebuild_state_machine_from_snapshot(&mut self, _: &mut Context<Self>, path: std::path::PathBuf) -> impl ActorFuture<Actor=Self, Item=(), Error=MemoryStorageError> {
+    fn rebuild_state_machine_from_snapshot(
+        &mut self,
+        _: &mut Context<Self>,
+        path: std::path::PathBuf,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = MemoryStorageError> {
         // Read full contents of the snapshot file.
         fut::wrap_future(self.snapshot_actor.send(DeserializeSnapshot(path)))
             .map_err(|err, _, _| panic!("Error communicating with snapshot actor. {}", err))
@@ -281,7 +359,8 @@ impl MemoryStorage {
             // Rebuild state machine from the deserialized data.
             .and_then(|entries, act: &mut Self, _| {
                 act.state_machine.clear();
-                act.state_machine.extend(entries.into_iter().map(|e| (e.index, e)));
+                act.state_machine
+                    .extend(entries.into_iter().map(|e| (e.index, e)));
                 fut::ok(())
             })
             .map(|_, _, _| debug!("Finished rebuilding statemachine from snapshot successfully."))
@@ -368,17 +447,26 @@ impl Handler<SyncInstallSnapshot> for SnapshotActor {
             MemoryStorageError
         })?;
 
-        let chunk_stream = msg.0.stream.map_err(|_| {
-            error!("Snapshot chunk stream hit an error in the memory_storage system.");
-            MemoryStorageError
-        }).wait();
+        let chunk_stream = msg
+            .0
+            .stream
+            .map_err(|_| {
+                error!("Snapshot chunk stream hit an error in the memory_storage system.");
+                MemoryStorageError
+            })
+            .wait();
         let mut did_process_final_chunk = false;
         for chunk in chunk_stream {
             let chunk = chunk?;
-            snapfile.seek(SeekFrom::Start(chunk.offset)).map_err(|err| {
-                error!("Error seeking to file location for writing snapshot chunk. {}", err);
-                MemoryStorageError
-            })?;
+            snapfile
+                .seek(SeekFrom::Start(chunk.offset))
+                .map_err(|err| {
+                    error!(
+                        "Error seeking to file location for writing snapshot chunk. {}",
+                        err
+                    );
+                    MemoryStorageError
+                })?;
             snapfile.write_all(&chunk.data).map_err(|err| {
                 error!("Error writing snapshot chunk to snapshot file. {}", err);
                 MemoryStorageError
@@ -393,7 +481,9 @@ impl Handler<SyncInstallSnapshot> for SnapshotActor {
             error!("Prematurely exiting snapshot chunk stream. Never hit final chunk.");
             Err(MemoryStorageError)
         } else {
-            Ok(EntrySnapshotPointer{path: filepath.to_string_lossy().to_string()})
+            Ok(EntrySnapshotPointer {
+                path: filepath.to_string_lossy().to_string(),
+            })
         }
     }
 }
@@ -424,7 +514,7 @@ impl Handler<GetCurrentState> for MemoryStorage {
     type Result = Result<CurrentStateData, ()>;
 
     fn handle(&mut self, _: GetCurrentState, _: &mut Self::Context) -> Self::Result {
-        Ok(CurrentStateData{
+        Ok(CurrentStateData {
             hs: self.hs.clone(),
             log: self.log.clone(),
             snapshot_data: self.snapshot_data.clone(),

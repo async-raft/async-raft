@@ -2,24 +2,25 @@ use actix::prelude::*;
 use log::{debug, error, warn};
 
 use crate::{
-    AppData, AppDataResponse, AppError,
-    common::{CLIENT_RPC_TX_ERR, ApplyLogsTask, DependencyAddr, UpdateCurrentLeader},
+    common::{ApplyLogsTask, DependencyAddr, UpdateCurrentLeader, CLIENT_RPC_TX_ERR},
     config::SnapshotPolicy,
     messages::{ClientPayloadResponse, ResponseMode},
     network::RaftNetwork,
-    raft::{Raft, RaftState, state::ConsensusState},
+    raft::{state::ConsensusState, Raft, RaftState},
     replication::{
-        RSFatalActixMessagingError, RSFatalStorageError,
-        RSNeedsSnapshot, RSNeedsSnapshotResponse,
-        RSRateUpdate, RSUpdateLineCommit, RSRevertToFollower, RSUpdateMatchIndex,
+        RSFatalActixMessagingError, RSFatalStorageError, RSNeedsSnapshot, RSNeedsSnapshotResponse,
+        RSRateUpdate, RSRevertToFollower, RSUpdateLineCommit, RSUpdateMatchIndex,
     },
-    storage::{CreateSnapshot, GetCurrentSnapshot, CurrentSnapshotData, RaftStorage},
+    storage::{CreateSnapshot, CurrentSnapshotData, GetCurrentSnapshot, RaftStorage},
+    AppData, AppDataResponse, AppError,
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RSFatalActixMessagingError ////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSFatalActixMessagingError> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSFatalActixMessagingError> for Raft<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle events from replication streams reporting errors.
@@ -31,7 +32,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RSFatalStorageError ///////////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSFatalStorageError<E>> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSFatalStorageError<E>> for Raft<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle events from replication streams reporting errors.
@@ -44,7 +47,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RSRateUpdate //////////////////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSRateUpdate> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSRateUpdate> for Raft<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle events from replication streams updating their replication rate tracker.
@@ -61,15 +66,26 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                 repl_state.is_at_line_rate = msg.is_line_rate;
                 // If in joint consensus, and the target node was one of the new nodes, update
                 // the joint consensus state to indicate that the target is up-to-date.
-                if let ConsensusState::Joint{new_nodes, is_committed} = &mut state.consensus_state {
-                    if let Some((idx, _)) = new_nodes.iter().enumerate().find(|(_, e)| *e == &msg.target) {
+                if let ConsensusState::Joint {
+                    new_nodes,
+                    is_committed,
+                } = &mut state.consensus_state
+                {
+                    if let Some((idx, _)) = new_nodes
+                        .iter()
+                        .enumerate()
+                        .find(|(_, e)| *e == &msg.target)
+                    {
                         new_nodes.remove(idx);
                     }
-                    if *is_committed && new_nodes.len() == 0 && self.membership.is_in_joint_consensus {
+                    if *is_committed
+                        && new_nodes.len() == 0
+                        && self.membership.is_in_joint_consensus
+                    {
                         self.finalize_joint_consensus(ctx);
                     }
                 }
-            },
+            }
             _ => (),
         }
     }
@@ -78,7 +94,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RSNeedsSnapshot ///////////////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSNeedsSnapshot> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSNeedsSnapshot> for Raft<D, R, E, N, S>
+{
     type Result = ResponseActFuture<Self, RSNeedsSnapshotResponse, ()>;
 
     /// Handle events from replication streams requesting for snapshot info.
@@ -99,35 +117,76 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         };
 
         // Check for existence of current snapshot.
-        Box::new(fut::wrap_future(self.storage.send(GetCurrentSnapshot::new()))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-            .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
-            .and_then(move |res, act, _| {
-                if let Some(meta) = res {
-                    // If snapshot exists, ensure its distance from the leader's last log index is <= half
-                    // of the configured snapshot threshold, else create a new snapshot.
-                    if snapshot_is_within_half_of_threshold(&meta, act.last_log_index, threshold) {
-                        let CurrentSnapshotData{index, term, membership, pointer} = meta;
-                        return fut::Either::A(fut::ok(RSNeedsSnapshotResponse{index, term, membership, pointer}));
+        Box::new(
+            fut::wrap_future(self.storage.send(GetCurrentSnapshot::new()))
+                .map_err(|err, act: &mut Self, ctx| {
+                    act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage)
+                })
+                .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
+                .and_then(move |res, act, _| {
+                    if let Some(meta) = res {
+                        // If snapshot exists, ensure its distance from the leader's last log index is <= half
+                        // of the configured snapshot threshold, else create a new snapshot.
+                        if snapshot_is_within_half_of_threshold(
+                            &meta,
+                            act.last_log_index,
+                            threshold,
+                        ) {
+                            let CurrentSnapshotData {
+                                index,
+                                term,
+                                membership,
+                                pointer,
+                            } = meta;
+                            return fut::Either::A(fut::ok(RSNeedsSnapshotResponse {
+                                index,
+                                term,
+                                membership,
+                                pointer,
+                            }));
+                        }
                     }
-                }
-                // If snapshot is not within half of threshold, or if snapshot does not exist, create a new snapshot.
-                // Create a new snapshot up through the committed index (to avoid jitter).
-                fut::Either::B(fut::wrap_future(act.storage.send::<CreateSnapshot<E>>(CreateSnapshot::new(act.commit_index)))
-                    .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-                    .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
-                    .and_then(|res, _, _| {
-                        let CurrentSnapshotData{index, term, membership, pointer} = res;
-                        fut::ok(RSNeedsSnapshotResponse{index, term, membership, pointer})
-                    }))
-            }))
+                    // If snapshot is not within half of threshold, or if snapshot does not exist, create a new snapshot.
+                    // Create a new snapshot up through the committed index (to avoid jitter).
+                    fut::Either::B(
+                        fut::wrap_future(
+                            act.storage
+                                .send::<CreateSnapshot<E>>(CreateSnapshot::new(act.commit_index)),
+                        )
+                        .map_err(|err, act: &mut Self, ctx| {
+                            act.map_fatal_actix_messaging_error(
+                                ctx,
+                                err,
+                                DependencyAddr::RaftStorage,
+                            )
+                        })
+                        .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
+                        .and_then(|res, _, _| {
+                            let CurrentSnapshotData {
+                                index,
+                                term,
+                                membership,
+                                pointer,
+                            } = res;
+                            fut::ok(RSNeedsSnapshotResponse {
+                                index,
+                                term,
+                                membership,
+                                pointer,
+                            })
+                        }),
+                    )
+                }),
+        )
     }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RSRevertToFollower ////////////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSRevertToFollower> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSRevertToFollower> for Raft<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle events from replication streams for when this node needs to revert to follower state.
@@ -144,7 +203,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // RSUpdateMatchIndex ////////////////////////////////////////////////////////////////////////////
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSUpdateMatchIndex> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSUpdateMatchIndex> for Raft<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle events from a replication stream which updates the target node's match index.
@@ -165,12 +226,15 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                         needs_removal = true;
                     }
                 }
-            },
+            }
             _ => return,
         }
         // Drop replication stream if needed.
         if needs_removal {
-            debug!("Node {} is dropping replication stream to node {}.", self.id, msg.target);
+            debug!(
+                "Node {} is dropping replication stream to node {}.",
+                self.id, msg.target
+            );
             state.nodes.remove(&msg.target);
         }
 
@@ -192,8 +256,12 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             }
 
             // Check if there are any pending requests which need to be processed.
-            let filter = state.awaiting_committed.iter().enumerate()
-                .take_while(|(_idx, elem)| &elem.index <= &new_commit_index).last()
+            let filter = state
+                .awaiting_committed
+                .iter()
+                .enumerate()
+                .take_while(|(_idx, elem)| &elem.index <= &new_commit_index)
+                .last()
                 .map(|(idx, _)| idx);
             if let Some(offset) = filter {
                 // Build a new ApplyLogsTask from each of the given client requests.
@@ -201,11 +269,23 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                     if let &ResponseMode::Committed = &request.response_mode {
                         // If this RPC is configured to wait only for log committed, then respond to client now.
                         let entry = request.entry();
-                        let _ = request.tx.send(Ok(ClientPayloadResponse::Committed{index: request.index})).map_err(|err| error!("{} {:?}", CLIENT_RPC_TX_ERR, err));
-                        let _ = self.apply_logs_pipeline.unbounded_send(ApplyLogsTask::Entry{entry, chan: None});
+                        let _ = request
+                            .tx
+                            .send(Ok(ClientPayloadResponse::Committed {
+                                index: request.index,
+                            }))
+                            .map_err(|err| error!("{} {:?}", CLIENT_RPC_TX_ERR, err));
+                        let _ = self
+                            .apply_logs_pipeline
+                            .unbounded_send(ApplyLogsTask::Entry { entry, chan: None });
                     } else {
                         // Else, send it through the pipeline and it will be responded to afterwords.
-                        let _ = self.apply_logs_pipeline.unbounded_send(ApplyLogsTask::Entry{entry: request.entry(), chan: Some(request.tx)});
+                        let _ = self
+                            .apply_logs_pipeline
+                            .unbounded_send(ApplyLogsTask::Entry {
+                                entry: request.entry(),
+                                chan: Some(request.tx),
+                            });
                     }
                 }
             }
@@ -229,12 +309,20 @@ fn calculate_new_commit_index(mut entries: Vec<u64>, current_commit: u64) -> u64
         return current_commit;
     } else if len == 1 {
         let only_elem = entries[0];
-        return if only_elem < current_commit { current_commit } else { only_elem };
+        return if only_elem < current_commit {
+            current_commit
+        } else {
+            only_elem
+        };
     };
 
     // Calculate offset which will give the majority slice of high-end.
     entries.sort();
-    let offset = if (len % 2) == 0 { (len/2)-1 } else { len/2 };
+    let offset = if (len % 2) == 0 {
+        (len / 2) - 1
+    } else {
+        len / 2
+    };
     let new_val = entries.get(offset).unwrap_or(&current_commit);
     if new_val < &current_commit {
         current_commit
@@ -244,9 +332,17 @@ fn calculate_new_commit_index(mut entries: Vec<u64>, current_commit: u64) -> u64
 }
 
 /// Check if the given snapshot data is within half of the configured threshold.
-fn snapshot_is_within_half_of_threshold(data: &CurrentSnapshotData, last_log_index: u64, threshold: u64) -> bool {
+fn snapshot_is_within_half_of_threshold(
+    data: &CurrentSnapshotData,
+    last_log_index: u64,
+    threshold: u64,
+) -> bool {
     // Calculate distance from actor's last log index.
-    let distance_from_line = if data.index > last_log_index { 0u64 } else { last_log_index - data.index }; // Guard against underflow.
+    let distance_from_line = if data.index > last_log_index {
+        0u64
+    } else {
+        last_log_index - data.index
+    }; // Guard against underflow.
     let half_of_threshold = threshold / 2;
     distance_from_line <= half_of_threshold
 }
@@ -272,7 +368,7 @@ mod tests {
                     let res = snapshot_is_within_half_of_threshold($data, $last_log, $thresh);
                     assert_eq!(res, $exp)
                 }
-            }
+            };
         }
 
         test_snapshot_is_within_half_of_threshold!({
@@ -318,37 +414,19 @@ mod tests {
                     entries.sort();
                     assert_eq!(output, $expected, "Sorted values: {:?}", entries);
                 }
-            }
+            };
         }
 
-        test_calculate_new_commit_index!(
-            basic_values,
-            10, 5, vec![20, 5, 0, 15, 10]
-        );
+        test_calculate_new_commit_index!(basic_values, 10, 5, vec![20, 5, 0, 15, 10]);
 
-        test_calculate_new_commit_index!(
-            len_zero_should_return_current_commit,
-            20, 20, vec![]
-        );
+        test_calculate_new_commit_index!(len_zero_should_return_current_commit, 20, 20, vec![]);
 
-        test_calculate_new_commit_index!(
-            len_one_where_greater_than_current,
-            100, 0, vec![100]
-        );
+        test_calculate_new_commit_index!(len_one_where_greater_than_current, 100, 0, vec![100]);
 
-        test_calculate_new_commit_index!(
-            len_one_where_less_than_current,
-            100, 100, vec![50]
-        );
+        test_calculate_new_commit_index!(len_one_where_less_than_current, 100, 100, vec![50]);
 
-        test_calculate_new_commit_index!(
-            even_number_of_nodes,
-            0, 0, vec![0, 100, 0, 100, 0, 100]
-        );
+        test_calculate_new_commit_index!(even_number_of_nodes, 0, 0, vec![0, 100, 0, 100, 0, 100]);
 
-        test_calculate_new_commit_index!(
-            majority_wins,
-            100, 0, vec![0, 100, 0, 100, 0, 100, 100]
-        );
+        test_calculate_new_commit_index!(majority_wins, 100, 0, vec![0, 100, 0, 100, 0, 100, 100]);
     }
 }

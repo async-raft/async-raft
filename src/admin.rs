@@ -2,10 +2,7 @@
 
 use actix::prelude::*;
 
-use crate::{
-    AppData, AppDataResponse, AppError, NodeId,
-    messages::ClientError,
-};
+use crate::{messages::ClientError, AppData, AppDataResponse, AppError, NodeId};
 
 /// Initialize a pristine Raft node with the given config & start a campaign to become leader.
 pub struct InitWithConfig {
@@ -19,7 +16,7 @@ pub struct InitWithConfig {
 impl InitWithConfig {
     /// Construct a new instance.
     pub fn new(members: Vec<NodeId>) -> Self {
-        Self{members}
+        Self { members }
     }
 }
 
@@ -72,7 +69,13 @@ impl<D: AppData, R: AppDataResponse, E: AppError> ProposeConfigChange<D, R, E> {
     /// If there are duplicates in either of the givenn vectors, they will be filtered out to
     /// ensure config is proper.
     pub fn new(add_members: Vec<NodeId>, remove_members: Vec<NodeId>) -> Self {
-        Self{add_members, remove_members, marker_data: std::marker::PhantomData, marker_res: std::marker::PhantomData, marker_error: std::marker::PhantomData}
+        Self {
+            add_members,
+            remove_members,
+            marker_data: std::marker::PhantomData,
+            marker_res: std::marker::PhantomData,
+            marker_error: std::marker::PhantomData,
+        }
     }
 }
 
@@ -112,16 +115,33 @@ pub enum ProposeConfigChangeError<D: AppData, R: AppDataResponse, E: AppError> {
     Noop,
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError> std::fmt::Display for ProposeConfigChangeError<D, R, E> {
+impl<D: AppData, R: AppDataResponse, E: AppError> std::fmt::Display
+    for ProposeConfigChangeError<D, R, E>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ProposeConfigChangeError::ClientError(err) => write!(f, "{}", err),
-            ProposeConfigChangeError::InoperableConfig => write!(f, "The given config would leave the cluster in an inoperable state."),
-            ProposeConfigChangeError::Internal => write!(f, "An error internal to Raft has taken place."),
-            ProposeConfigChangeError::NodeNotLeader(leader_opt) => write!(f, "The handling node is not the Raft leader. Tracked value for cluster leader: {:?}", leader_opt),
-            ProposeConfigChangeError::Noop => write!(f, "The proposed config change would have no effect, this is a no-op."),
+            ProposeConfigChangeError::InoperableConfig => write!(
+                f,
+                "The given config would leave the cluster in an inoperable state."
+            ),
+            ProposeConfigChangeError::Internal => {
+                write!(f, "An error internal to Raft has taken place.")
+            }
+            ProposeConfigChangeError::NodeNotLeader(leader_opt) => write!(
+                f,
+                "The handling node is not the Raft leader. Tracked value for cluster leader: {:?}",
+                leader_opt
+            ),
+            ProposeConfigChangeError::Noop => write!(
+                f,
+                "The proposed config change would have no effect, this is a no-op."
+            ),
         }
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError> std::error::Error for ProposeConfigChangeError<D, R, E> {}
+impl<D: AppData, R: AppDataResponse, E: AppError> std::error::Error
+    for ProposeConfigChangeError<D, R, E>
+{
+}

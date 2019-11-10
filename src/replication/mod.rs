@@ -13,16 +13,15 @@ use std::sync::Arc;
 use actix::prelude::*;
 
 use crate::{
-    AppData, AppDataResponse, AppError, NodeId,
     common::DependencyAddr,
     config::{Config, SnapshotPolicy},
     messages::{
-        AppendEntriesRequest, AppendEntriesResponse,
-        Entry, EntrySnapshotPointer, MembershipConfig,
+        AppendEntriesRequest, AppendEntriesResponse, Entry, EntrySnapshotPointer, MembershipConfig,
     },
     network::RaftNetwork,
-    raft::{Raft},
-    storage::{RaftStorage, GetLogEntries},
+    raft::Raft,
+    storage::{GetLogEntries, RaftStorage},
+    AppData, AppDataResponse, AppError, NodeId,
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -49,7 +48,9 @@ struct LineRateState<D: AppData> {
 
 impl<D: AppData> Default for LineRateState<D> {
     fn default() -> Self {
-        Self{buffered_outbound: vec![]}
+        Self {
+            buffered_outbound: vec![],
+        }
     }
 }
 
@@ -66,7 +67,10 @@ struct LaggingState<D: AppData> {
 
 impl<D: AppData> Default for LaggingState<D> {
     fn default() -> Self {
-        Self{is_ready_for_line_rate: false, buffered_outbound: vec![]}
+        Self {
+            is_ready_for_line_rate: false,
+            buffered_outbound: vec![],
+        }
     }
 }
 
@@ -122,10 +126,15 @@ struct SnapshottingState;
 ///
 /// NOTE: we do not stack replication requests to targets because this could result in
 /// out-of-order delivery.
-pub(crate) struct ReplicationStream<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> {
+pub(crate) struct ReplicationStream<
+    D: AppData,
+    R: AppDataResponse,
+    E: AppError,
+    N: RaftNetwork<D>,
+    S: RaftStorage<D, R, E>,
+> {
     //////////////////////////////////////////////////////////////////////////
     // Static Fields /////////////////////////////////////////////////////////
-
     /// The ID of this Raft node.
     id: NodeId,
     /// The ID of the target Raft node which replication events are to be sent to.
@@ -146,7 +155,6 @@ pub(crate) struct ReplicationStream<D: AppData, R: AppDataResponse, E: AppError,
 
     //////////////////////////////////////////////////////////////////////////
     // Dynamic Fields ////////////////////////////////////////////////////////
-
     /// The state of this replication stream, primarily corresponding to replication performance.
     state: RSState<D>,
     /// A flag indicating if the state loop is currently being driven forward.
@@ -185,18 +193,37 @@ pub(crate) struct ReplicationStream<D: AppData, R: AppDataResponse, E: AppError,
     match_term: u64,
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> ReplicationStream<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    ReplicationStream<D, R, E, N, S>
+{
     /// Create a new instance.
     pub fn new(
-        id: NodeId, target: NodeId, term: u64, config: Arc<Config>,
-        line_index: u64, line_term: u64, line_commit: u64,
-        raftnode: Addr<Raft<D, R, E, N, S>>, network: Addr<N>, storage: Recipient<GetLogEntries<D, E>>,
+        id: NodeId,
+        target: NodeId,
+        term: u64,
+        config: Arc<Config>,
+        line_index: u64,
+        line_term: u64,
+        line_commit: u64,
+        raftnode: Addr<Raft<D, R, E, N, S>>,
+        network: Addr<N>,
+        storage: Recipient<GetLogEntries<D, E>>,
     ) -> Self {
-        Self{
-            id, target, term, raftnode, network, storage, config,
-            state: RSState::LineRate(Default::default()), is_driving_state: false,
-            line_index, line_commit,
-            next_index: line_index + 1, match_index: line_index, match_term: line_term,
+        Self {
+            id,
+            target,
+            term,
+            raftnode,
+            network,
+            storage,
+            config,
+            state: RSState::LineRate(Default::default()),
+            is_driving_state: false,
+            line_index,
+            line_commit,
+            next_index: line_index + 1,
+            match_index: line_index,
+            match_term: line_term,
         }
     }
 
@@ -233,8 +260,11 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     /// An optional tuple of the index and term of the last entry to be appended per the
     /// corresponding request.
     fn handle_append_entries_response(
-        &mut self, ctx: &mut Context<Self>, res: AppendEntriesResponse, last_index_and_term: Option<(u64, u64)>,
-    ) -> Box<dyn ActorFuture<Actor=Self, Item=(), Error=()> + 'static> {
+        &mut self,
+        ctx: &mut Context<Self>,
+        res: AppendEntriesResponse,
+        last_index_and_term: Option<(u64, u64)>,
+    ) -> Box<dyn ActorFuture<Actor = Self, Item = (), Error = ()> + 'static> {
         // TODO: remove the allocations here once async/await lands on stable.
 
         // Handle success conditions.
@@ -244,7 +274,10 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                 self.next_index = index + 1; // This should always be the next expected index.
                 self.match_index = index;
                 self.match_term = term;
-                self.raftnode.do_send(RSUpdateMatchIndex{target: self.target, match_index: index});
+                self.raftnode.do_send(RSUpdateMatchIndex {
+                    target: self.target,
+                    match_index: index,
+                });
             }
 
             // If running at line rate, and our buffered outbound requests have accumulated too
@@ -263,13 +296,19 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // Replication was not successful, if a newer term has been returned, revert to follower.
         if &res.term > &self.term {
             return Box::new(
-                fut::wrap_future(self.raftnode.send(RSRevertToFollower{target: self.target, term: res.term}))
-                    .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal))
-                    // This condition represents a replication failure, so return an error condition.
-                    .and_then(|_, _, ctx| {
-                        ctx.terminate(); // Terminate this replication stream.
-                        fut::err(())
-                    }));
+                fut::wrap_future(self.raftnode.send(RSRevertToFollower {
+                    target: self.target,
+                    term: res.term,
+                }))
+                .map_err(|err, act: &mut Self, ctx| {
+                    act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal)
+                })
+                // This condition represents a replication failure, so return an error condition.
+                .and_then(|_, _, ctx| {
+                    ctx.terminate(); // Terminate this replication stream.
+                    fut::err(())
+                }),
+            );
         }
 
         // Replication was not successful, handle conflict optimization record, else decrement `next_index`.
@@ -304,7 +343,11 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                 }
             }
         } else {
-            self.next_index = if self.next_index > 0 { self.next_index - 1} else { 0 }; // Guard against underflow.
+            self.next_index = if self.next_index > 0 {
+                self.next_index - 1
+            } else {
+                0
+            }; // Guard against underflow.
             return Box::new(self.transition_to_lagging(ctx));
         }
     }
@@ -314,8 +357,17 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     /// This method treats the error as being fatal, as Raft can not function properly if the
     /// `RaftNetowrk` & `RaftStorage` interfaces are returning mailbox errors. This method will
     /// shutdown the Raft actor.
-    fn map_fatal_actix_messaging_error(&mut self, _: &mut Context<Self>, err: actix::MailboxError, dep: DependencyAddr) {
-        self.raftnode.do_send(RSFatalActixMessagingError{target: self.target, err, dependency: dep})
+    fn map_fatal_actix_messaging_error(
+        &mut self,
+        _: &mut Context<Self>,
+        err: actix::MailboxError,
+        dep: DependencyAddr,
+    ) {
+        self.raftnode.do_send(RSFatalActixMessagingError {
+            target: self.target,
+            err,
+            dependency: dep,
+        })
     }
 
     /// Transform an log the result of a `RaftStorage` interaction.
@@ -323,9 +375,16 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     /// This method assumes that a storage error observed here is non-recoverable. As such, the
     /// Raft node will be instructed to stop. If such behavior is not needed, then don't use this
     /// interface.
-    fn map_fatal_storage_result<T>(&mut self, _: &mut Context<Self>, res: Result<T, E>) -> impl ActorFuture<Actor=Self, Item=T, Error=()> {
+    fn map_fatal_storage_result<T>(
+        &mut self,
+        _: &mut Context<Self>,
+        res: Result<T, E>,
+    ) -> impl ActorFuture<Actor = Self, Item = T, Error = ()> {
         let res = res.map_err(|err| {
-            self.raftnode.do_send(RSFatalStorageError{target: self.target, err});
+            self.raftnode.do_send(RSFatalStorageError {
+                target: self.target,
+                err,
+            });
         });
         fut::result(res)
     }
@@ -336,54 +395,83 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     /// updated. This routine does not perform any timeout logic. That is up to the parent
     /// application's networking layer.
     fn send_append_entries(
-        &mut self, _: &mut Context<Self>, request: AppendEntriesRequest<D>,
-    ) -> impl ActorFuture<Actor=Self, Item=AppendEntriesResponse, Error=()> {
+        &mut self,
+        _: &mut Context<Self>,
+        request: AppendEntriesRequest<D>,
+    ) -> impl ActorFuture<Actor = Self, Item = AppendEntriesResponse, Error = ()> {
         // Send the payload.
         fut::wrap_future(self.network.send(request))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftNetwork))
+            .map_err(|err, act: &mut Self, ctx| {
+                act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftNetwork)
+            })
             .and_then(|res, _, _| fut::result(res))
     }
 
     /// Transition this actor to the state `RSState::Lagging` & notify Raft node.
     ///
     /// NOTE WELL: this will not drive the state forward. That must be called from business logic.
-    fn transition_to_lagging(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    fn transition_to_lagging(
+        &mut self,
+        _: &mut Context<Self>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         self.state = RSState::Lagging(LaggingState::default());
-        let event = RSRateUpdate{target: self.target, is_line_rate: false};
-        fut::wrap_future(self.raftnode.send(event))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal))
+        let event = RSRateUpdate {
+            target: self.target,
+            is_line_rate: false,
+        };
+        fut::wrap_future(self.raftnode.send(event)).map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal)
+        })
     }
 
     /// Transition this actor to the state `RSState::LineRate` & notify Raft node.
     ///
     /// NOTE WELL: this will not drive the state forward. That must be called from business logic.
-    fn transition_to_line_rate(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    fn transition_to_line_rate(
+        &mut self,
+        _: &mut Context<Self>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         // Transition pertinent state from lagging to line rate.
         let mut new_state = LineRateState::default();
         match &mut self.state {
             RSState::Lagging(inner) => {
-                new_state.buffered_outbound.append(&mut inner.buffered_outbound);
+                new_state
+                    .buffered_outbound
+                    .append(&mut inner.buffered_outbound);
             }
             _ => (),
         }
         self.state = RSState::LineRate(new_state);
-        let event = RSRateUpdate{target: self.target, is_line_rate: true};
-        fut::wrap_future(self.raftnode.send(event))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal))
+        let event = RSRateUpdate {
+            target: self.target,
+            is_line_rate: true,
+        };
+        fut::wrap_future(self.raftnode.send(event)).map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal)
+        })
     }
 
     /// Transition this actor to the state `RSState::Snapshotting` & notify Raft node.
     ///
     /// NOTE WELL: this will not drive the state forward. That must be called from business logic.
-    fn transition_to_snapshotting(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    fn transition_to_snapshotting(
+        &mut self,
+        _: &mut Context<Self>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         self.state = RSState::Snapshotting(SnapshottingState::default());
-        let event = RSRateUpdate{target: self.target, is_line_rate: false};
-        fut::wrap_future(self.raftnode.send(event))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal))
+        let event = RSRateUpdate {
+            target: self.target,
+            is_line_rate: false,
+        };
+        fut::wrap_future(self.raftnode.send(event)).map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal)
+        })
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Actor for ReplicationStream<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Actor
+    for ReplicationStream<D, R, E, N, S>
+{
     type Context = Context<Self>;
 
     /// Perform actors startup routine.
@@ -421,7 +509,9 @@ impl<D: AppData> Message for RSReplicate<D> {
     type Result = Result<(), ()>;
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSReplicate<D>> for ReplicationStream<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSReplicate<D>> for ReplicationStream<D, R, E, N, S>
+{
     type Result = Result<(), ()>;
 
     /// Handle a request to replicate the given payload of entries.
@@ -454,7 +544,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 #[derive(Clone, Message)]
 pub(crate) struct RSUpdateLineCommit(pub u64);
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSUpdateLineCommit> for ReplicationStream<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSUpdateLineCommit> for ReplicationStream<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle a request to update the current line commit of the leader.
@@ -470,7 +562,9 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 #[derive(Message)]
 pub(crate) struct RSTerminate;
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSTerminate> for ReplicationStream<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<RSTerminate> for ReplicationStream<D, R, E, N, S>
+{
     type Result = ();
 
     /// Handle a request to terminate this replication stream.

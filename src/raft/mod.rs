@@ -16,23 +16,29 @@ use std::{
 };
 
 use actix::prelude::*;
-use futures::sync::{mpsc};
-use log::{error};
+use futures::sync::mpsc;
+use log::error;
 
 use crate::{
-    AppData, AppDataResponse, AppError, NodeId,
     common::{ApplyLogsTask, DependencyAddr, UpdateCurrentLeader},
     config::Config,
     messages::{ClientPayload, MembershipConfig},
     metrics::{RaftMetrics, State},
     network::RaftNetwork,
-    raft::state::{CandidateState, FollowerState, LeaderState, RaftState, ReplicationState, SnapshotState},
-    replication::{ReplicationStream, RSTerminate},
-    storage::{GetInitialState, GetLogEntries, HardState, InitialState, RaftStorage, SaveHardState},
+    raft::state::{
+        CandidateState, FollowerState, LeaderState, RaftState, ReplicationState, SnapshotState,
+    },
+    replication::{RSTerminate, ReplicationStream},
+    storage::{
+        GetInitialState, GetLogEntries, HardState, InitialState, RaftStorage, SaveHardState,
+    },
+    AppData, AppDataResponse, AppError, NodeId,
 };
 
-const FATAL_ACTIX_MAILBOX_ERR: &str = "Fatal actix MailboxError while communicating with Raft dependency. Raft is shutting down.";
-const FATAL_STORAGE_ERR: &str = "Fatal storage error encountered which can not be recovered from. Stopping Raft node.";
+const FATAL_ACTIX_MAILBOX_ERR: &str =
+    "Fatal actix MailboxError while communicating with Raft dependency. Raft is shutting down.";
+const FATAL_STORAGE_ERR: &str =
+    "Fatal storage error encountered which can not be recovered from. Stopping Raft node.";
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 // Raft //////////////////////////////////////////////////////////////////////////////////////////
@@ -87,7 +93,13 @@ const FATAL_STORAGE_ERR: &str = "Fatal storage error encountered which can not b
 /// These are admin commands which may be issued to a Raft node in order to influence it in ways
 /// outside of the normal Raft lifecycle. Dynamic membership changes and cluster initialization
 /// are the main commands of this layer.
-pub struct Raft<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> {
+pub struct Raft<
+    D: AppData,
+    R: AppDataResponse,
+    E: AppError,
+    N: RaftNetwork<D>,
+    S: RaftStorage<D, R, E>,
+> {
     /// This node's ID.
     id: NodeId,
     /// This node's runtime config.
@@ -156,24 +168,49 @@ pub struct Raft<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, 
     election_timeout_stamp: Option<Instant>,
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Raft<D, R, E, N, S>
+{
     /// Create a new Raft instance.
     ///
     /// This actor will need to be started after instantiation, which must be done within a
     /// running actix system.
-    pub fn new(id: NodeId, config: Config, network: Addr<N>, storage: Addr<S::Actor>, metrics: Recipient<RaftMetrics>) -> Self {
+    pub fn new(
+        id: NodeId,
+        config: Config,
+        network: Addr<N>,
+        storage: Addr<S::Actor>,
+        metrics: Recipient<RaftMetrics>,
+    ) -> Self {
         let state = RaftState::Initializing;
         let config = Arc::new(config);
         let (tx, rx) = mpsc::unbounded();
-        let membership = MembershipConfig{is_in_joint_consensus: false, members: vec![id], non_voters: vec![], removing: vec![]};
-        Self{
-            id, config, membership, state, network, storage, metrics,
-            commit_index: 0, last_applied: 0,
-            current_term: 0, current_leader: None, voted_for: None,
-            last_log_index: 0, last_log_term: 0,
+        let membership = MembershipConfig {
+            is_in_joint_consensus: false,
+            members: vec![id],
+            non_voters: vec![],
+            removing: vec![],
+        };
+        Self {
+            id,
+            config,
+            membership,
+            state,
+            network,
+            storage,
+            metrics,
+            commit_index: 0,
+            last_applied: 0,
+            current_term: 0,
+            current_leader: None,
+            voted_for: None,
+            last_log_index: 0,
+            last_log_term: 0,
             is_appending_logs: false,
-            apply_logs_pipeline: tx, _apply_logs_pipeline_receiver: Some(rx),
-            election_timeout: None, election_timeout_stamp: None,
+            apply_logs_pipeline: tx,
+            _apply_logs_pipeline_receiver: Some(rx),
+            election_timeout: None,
+            election_timeout_stamp: None,
         }
     }
 
@@ -256,7 +293,13 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
         // Send RPCs to all members in parallel.
         let mut requests = BTreeMap::new();
-        let peers = self.membership.members.iter().filter(|member| *member != &self.id).map(|e| *e).collect::<Vec<_>>();
+        let peers = self
+            .membership
+            .members
+            .iter()
+            .filter(|member| *member != &self.id)
+            .map(|e| *e)
+            .collect::<Vec<_>>();
         for member in peers {
             let f = self.request_vote(ctx, member);
             let handle = ctx.spawn(f);
@@ -269,7 +312,11 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // Update Raft state as candidate.
         let votes_granted = 1; // We must vote for ourselves per the Raft spec.
         let votes_needed = ((self.membership.members.len() / 2) + 1) as u64; // Just need a majority.
-        self.state = RaftState::Candidate(CandidateState{requests, votes_granted, votes_needed});
+        self.state = RaftState::Candidate(CandidateState {
+            requests,
+            votes_granted,
+            votes_needed,
+        });
         self.report_metrics(ctx);
     }
 
@@ -300,25 +347,43 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         let mut new_state = LeaderState::new(client_request_queue, &self.membership);
 
         // Spawn stream which consumes client RPCs.
-        ctx.spawn(fut::wrap_stream(client_request_receiver)
-            .and_then(|msg, act: &mut Self, ctx| act.process_client_rpc(ctx, msg))
-            .then(|_, _, _| fut::ok(())) // Ensure errors don't cause the stream to close.
-            .finish());
+        ctx.spawn(
+            fut::wrap_stream(client_request_receiver)
+                .and_then(|msg, act: &mut Self, ctx| act.process_client_rpc(ctx, msg))
+                .then(|_, _, _| fut::ok(())) // Ensure errors don't cause the stream to close.
+                .finish(),
+        );
 
         // Spawn new replication stream actors.
-        let targets = self.membership.members.iter().filter(|elem| *elem != &self.id)
+        let targets = self
+            .membership
+            .members
+            .iter()
+            .filter(|elem| *elem != &self.id)
             .chain(self.membership.non_voters.iter());
         for target in targets {
             // Build the replication stream for the target member.
             let rs = ReplicationStream::new(
-                self.id, *target, self.current_term, self.config.clone(),
-                self.last_log_index, self.last_log_term, self.commit_index,
-                ctx.address(), self.network.clone(), self.storage.clone().recipient::<GetLogEntries<D, E>>(),
+                self.id,
+                *target,
+                self.current_term,
+                self.config.clone(),
+                self.last_log_index,
+                self.last_log_term,
+                self.commit_index,
+                ctx.address(),
+                self.network.clone(),
+                self.storage.clone().recipient::<GetLogEntries<D, E>>(),
             );
             let addr = rs.start(); // Start the actor on the same thread.
 
             // Retain the addr of the replication stream.
-            let state = ReplicationState{match_index: self.last_log_index, is_at_line_rate: true, addr, remove_after_commit: None};
+            let state = ReplicationState {
+                match_index: self.last_log_index,
+                is_at_line_rate: true,
+                addr,
+                remove_after_commit: None,
+            };
             new_state.nodes.insert(*target, state);
         }
 
@@ -334,12 +399,15 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         } else {
             ClientPayload::new_blank_payload()
         };
-        ctx.spawn(fut::wrap_future(ctx.address().send(payload))
-            .map_err(|_, _, _| ())
-            .and_then(|res, _, _| fut::result(res.map_err(|_| ())))
-            // In the case that there was a stale record and it was a joint consensus
-            // finalization, ensure it is handled properly.
-            .and_then(|res, act: &mut Self, ctx| act.handle_joint_consensus_finalization(ctx, res))
+        ctx.spawn(
+            fut::wrap_future(ctx.address().send(payload))
+                .map_err(|_, _, _| ())
+                .and_then(|res, _, _| fut::result(res.map_err(|_| ())))
+                // In the case that there was a stale record and it was a joint consensus
+                // finalization, ensure it is handled properly.
+                .and_then(|res, act: &mut Self, ctx| {
+                    act.handle_joint_consensus_finalization(ctx, res)
+                }),
         );
     }
 
@@ -406,16 +474,21 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
         // Spawn the stream for applying logs to the state machine. This will always be `Some` here, never after.
         if let Some(rx) = self._apply_logs_pipeline_receiver.take() {
-            ctx.spawn(fut::wrap_stream(rx)
-                .and_then(|msg, act: &mut Self, ctx| act.process_apply_logs_task(ctx, msg))
-                .finish());
+            ctx.spawn(
+                fut::wrap_stream(rx)
+                    .and_then(|msg, act: &mut Self, ctx| act.process_apply_logs_task(ctx, msg))
+                    .finish(),
+            );
         }
 
         // Start the metrics reporter.
-        ctx.run_interval(self.config.metrics_rate.clone(), |act, ctx| act.report_metrics(ctx));
+        ctx.run_interval(self.config.metrics_rate.clone(), |act, ctx| {
+            act.report_metrics(ctx)
+        });
 
         // Set initial state based on state recovered from disk.
-        let is_only_configured_member = self.membership.len() == 1 && self.membership.contains(&self.id);
+        let is_only_configured_member =
+            self.membership.len() == 1 && self.membership.contains(&self.id);
         // If this is the only configured member and there is live state, then this is
         // a single-node cluster currently. Become leader.
         if is_only_configured_member && &self.last_log_index != &u64::min_value() {
@@ -437,7 +510,12 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     /// This method treats the error as being fatal, as Raft can not function properly if the
     /// `RaftNetowrk` & `RaftStorage` interfaces are returning mailbox errors. This method will
     /// shutdown the Raft actor.
-    fn map_fatal_actix_messaging_error(&mut self, ctx: &mut Context<Self>, err: actix::MailboxError, dep: DependencyAddr) {
+    fn map_fatal_actix_messaging_error(
+        &mut self,
+        ctx: &mut Context<Self>,
+        err: actix::MailboxError,
+        dep: DependencyAddr,
+    ) {
         error!("{} {:?} {:?}", FATAL_ACTIX_MAILBOX_ERR, dep, err);
         ctx.terminate();
     }
@@ -447,7 +525,11 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     /// This method assumes that a storage error observed here is non-recoverable. As such, the
     /// Raft node will be instructed to stop. If such behavior is not needed, then don't use this
     /// interface.
-    fn map_fatal_storage_result<T>(&mut self, ctx: &mut Context<Self>, res: Result<T, E>) -> impl ActorFuture<Actor=Self, Item=T, Error=()> {
+    fn map_fatal_storage_result<T>(
+        &mut self,
+        ctx: &mut Context<Self>,
+        res: Result<T, E>,
+    ) -> impl ActorFuture<Actor = Self, Item = T, Error = ()> {
         let res = res.map_err(|err| {
             error!("{} {:?}", FATAL_STORAGE_ERR, err);
             ctx.terminate();
@@ -464,35 +546,61 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             RaftState::Leader(_) => State::Leader,
             _ => return,
         };
-        let _ = self.metrics.do_send(RaftMetrics{
-            id: self.id, state, current_term: self.current_term,
-            last_log_index: self.last_log_index,
-            last_applied: self.last_applied,
-            current_leader: self.current_leader,
-            membership_config: self.membership.clone(),
-        }).map_err(|err| {
-            error!("Error reporting metrics. {}", err);
-        });
+        let _ = self
+            .metrics
+            .do_send(RaftMetrics {
+                id: self.id,
+                state,
+                current_term: self.current_term,
+                last_log_index: self.last_log_index,
+                last_applied: self.last_applied,
+                current_leader: self.current_leader,
+                membership_config: self.membership.clone(),
+            })
+            .map_err(|err| {
+                error!("Error reporting metrics. {}", err);
+            });
     }
 
     /// Save the Raft node's current hard state to disk.
     ///
     /// DEPRECATED: use `save_hard_state_async`.
     fn save_hard_state(&mut self, ctx: &mut Context<Self>) {
-        let hs = HardState{current_term: self.current_term, voted_for: self.voted_for, membership: self.membership.clone()};
-        let f = fut::wrap_future(self.storage.send::<SaveHardState<E>>(SaveHardState::new(hs)))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-            .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res));
+        let hs = HardState {
+            current_term: self.current_term,
+            voted_for: self.voted_for,
+            membership: self.membership.clone(),
+        };
+        let f = fut::wrap_future(
+            self.storage
+                .send::<SaveHardState<E>>(SaveHardState::new(hs)),
+        )
+        .map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage)
+        })
+        .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res));
 
         ctx.spawn(f);
     }
 
     /// Save the Raft node's current hard state to disk.
-    fn save_hard_state_async(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
-        let hs = HardState{current_term: self.current_term, voted_for: self.voted_for, membership: self.membership.clone()};
-        fut::wrap_future(self.storage.send::<SaveHardState<E>>(SaveHardState::new(hs)))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-            .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
+    fn save_hard_state_async(
+        &mut self,
+        _: &mut Context<Self>,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
+        let hs = HardState {
+            current_term: self.current_term,
+            voted_for: self.voted_for,
+            membership: self.membership.clone(),
+        };
+        fut::wrap_future(
+            self.storage
+                .send::<SaveHardState<E>>(SaveHardState::new(hs)),
+        )
+        .map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage)
+        })
+        .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
     }
 
     /// Update the value of the `current_leader` property.
@@ -512,7 +620,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             }
             UpdateCurrentLeader::Unknown => {
                 self.current_leader = None;
-            },
+            }
         }
     }
 
@@ -557,14 +665,19 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
     /// Update the election timeout stamp, typically due to receiving a heartbeat from the Raft leader.
     fn update_election_timeout_stamp(&mut self) {
-        self.election_timeout_stamp = Some(Instant::now() + Duration::from_millis(self.config.election_timeout_millis));
+        self.election_timeout_stamp =
+            Some(Instant::now() + Duration::from_millis(self.config.election_timeout_millis));
     }
 
     /// Update the node's current membership config.
     ///
     /// NOTE WELL: if a leader is stepping down, it should not call this method, as it will cause
     /// the node to transition out of leader state before it can commit the config entry.
-    fn update_membership(&mut self, ctx: &mut Context<Self>, cfg: MembershipConfig) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    fn update_membership(
+        &mut self,
+        ctx: &mut Context<Self>,
+        cfg: MembershipConfig,
+    ) -> impl ActorFuture<Actor = Self, Item = (), Error = ()> {
         self.membership = cfg;
 
         // If the given config does not contain this node's ID, it means one of the following:
@@ -585,16 +698,23 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Actor for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Actor
+    for Raft<D, R, E, N, S>
+{
     type Context = Context<Self>;
 
     /// The initialization routine for this actor.
     fn started(&mut self, ctx: &mut Self::Context) {
         // Fetch the node's initial state from the storage actor & initialize.
-        let f = fut::wrap_future(self.storage.send::<GetInitialState<E>>(GetInitialState::new()))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-            .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
-            .map(|state, act, ctx| act.initialize(ctx, state));
+        let f = fut::wrap_future(
+            self.storage
+                .send::<GetInitialState<E>>(GetInitialState::new()),
+        )
+        .map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage)
+        })
+        .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
+        .map(|state, act, ctx| act.initialize(ctx, state));
         ctx.spawn(f);
     }
 }

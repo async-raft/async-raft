@@ -9,8 +9,8 @@ use actix_raft::metrics::{RaftMetrics, State};
 use futures::sync::oneshot;
 
 use fixtures::{
-    RaftTestController, Node, setup_logger,
     dev::{ExecuteInRaftRouter, RaftRouter, Register},
+    setup_logger, Node, RaftTestController,
 };
 
 /// Basic lifecycle tests for a three node cluster.
@@ -38,15 +38,26 @@ fn clustering() {
     let network = net.start();
     let members = vec![0, 1, 2];
     let node0 = Node::builder(0, network.clone(), members.clone()).build();
-    network.do_send(Register{id: 0, addr: node0.addr.clone()});
+    network.do_send(Register {
+        id: 0,
+        addr: node0.addr.clone(),
+    });
     let node1 = Node::builder(1, network.clone(), members.clone()).build();
-    network.do_send(Register{id: 1, addr: node1.addr.clone()});
+    network.do_send(Register {
+        id: 1,
+        addr: node1.addr.clone(),
+    });
     let node2 = Node::builder(2, network.clone(), members.clone()).build();
-    network.do_send(Register{id: 2, addr: node2.addr.clone()});
+    network.do_send(Register {
+        id: 2,
+        addr: node2.addr.clone(),
+    });
 
     // Setup test controller and actions.
     let mut ctl = RaftTestController::new(network);
-    ctl.register(0, node0.addr.clone()).register(1, node1.addr.clone()).register(2, node2.addr.clone());
+    ctl.register(0, node0.addr.clone())
+        .register(1, node1.addr.clone())
+        .register(2, node2.addr.clone());
     ctl.start_with_test(10, Box::new(|act, ctx| {
         let (tx0, rx0) = oneshot::channel();
         act.network.do_send(ExecuteInRaftRouter(Box::new(move |act, _| {

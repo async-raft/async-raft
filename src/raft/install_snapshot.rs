@@ -1,17 +1,19 @@
 use actix::prelude::*;
-use log::{debug, error};
 use futures::sync::{mpsc, oneshot};
+use log::{debug, error};
 
 use crate::{
-    AppData, AppDataResponse, AppError,
     common::{DependencyAddr, UpdateCurrentLeader},
-    network::RaftNetwork,
     messages::{InstallSnapshotRequest, InstallSnapshotResponse},
-    raft::{RaftState, Raft, SnapshotState},
+    network::RaftNetwork,
+    raft::{Raft, RaftState, SnapshotState},
     storage::{InstallSnapshot, InstallSnapshotChunk, RaftStorage},
+    AppData, AppDataResponse, AppError,
 };
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<InstallSnapshotRequest> for Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Handler<InstallSnapshotRequest> for Raft<D, R, E, N, S>
+{
     type Result = ResponseActFuture<Self, InstallSnapshotResponse, ()>;
 
     /// Invoked by leader to send chunks of a snapshot to a follower (§7).
@@ -82,34 +84,50 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             SnapshotState::Streaming(Some(tx), _) => {
                 let tx = tx.clone();
                 self.handle_snapshot_chunk(ctx, msg, tx.clone())
-            },
+            }
             // Duplicate message after one of the channels has been dropped. Err and return to Idle.
             SnapshotState::Streaming(_, _) => Box::new(fut::err(())),
         }
     }
 }
 
-impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Raft<D, R, E, N, S> {
+impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>>
+    Raft<D, R, E, N, S>
+{
     // Install a new snapshot which was small enough to fit into a single frame.
-    fn handle_mini_snapshot(&mut self, ctx: &mut Context<Self>, msg: InstallSnapshotRequest) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+    fn handle_mini_snapshot(
+        &mut self,
+        ctx: &mut Context<Self>,
+        msg: InstallSnapshotRequest,
+    ) -> Box<dyn ActorFuture<Actor = Self, Item = InstallSnapshotResponse, Error = ()>> {
         let (tx, rx) = mpsc::unbounded();
         let (chunktx, chunkrx) = oneshot::channel();
         let (finaltx, finalrx) = oneshot::channel();
 
         // Start storage engine task.
         let (snap_index, snap_term) = (msg.last_included_index, msg.last_included_term);
-        let task = fut::wrap_future(self.storage.send::<InstallSnapshot<E>>(InstallSnapshot::new(snap_term, snap_index, rx)))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-            .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
-            .map(move |_, _, _| {
-                // This will be called after all snapshot chunks have been streamed in and
-                // we've received the final response from the storage engine.
-                let _ = finaltx.send(());
-            });
+        let task = fut::wrap_future(
+            self.storage
+                .send::<InstallSnapshot<E>>(InstallSnapshot::new(snap_term, snap_index, rx)),
+        )
+        .map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage)
+        })
+        .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
+        .map(move |_, _, _| {
+            // This will be called after all snapshot chunks have been streamed in and
+            // we've received the final response from the storage engine.
+            let _ = finaltx.send(());
+        });
         ctx.spawn(task);
 
         // Send first & final chunk of data.
-        match tx.unbounded_send(InstallSnapshotChunk{offset: msg.offset, data: msg.data, done: msg.done, cb: chunktx}) {
+        match tx.unbounded_send(InstallSnapshotChunk {
+            offset: msg.offset,
+            data: msg.data,
+            done: msg.done,
+            cb: chunktx,
+        }) {
             Ok(_) => (),
             Err(_) => {
                 error!("Error streaming snapshot chunks to storage engine. Channel was closed.");
@@ -142,7 +160,11 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             }))
     }
 
-    fn handle_snapshot_stream(&mut self, ctx: &mut Context<Self>, msg: InstallSnapshotRequest) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+    fn handle_snapshot_stream(
+        &mut self,
+        ctx: &mut Context<Self>,
+        msg: InstallSnapshotRequest,
+    ) -> Box<dyn ActorFuture<Actor = Self, Item = InstallSnapshotResponse, Error = ()>> {
         let (tx, rx) = mpsc::unbounded();
         let (chunktx, chunkrx) = oneshot::channel();
         let (finaltx, finalrx) = oneshot::channel();
@@ -154,18 +176,28 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         }
 
         let (snap_index, snap_term) = (msg.last_included_index, msg.last_included_term);
-        let f = fut::wrap_future(self.storage.send::<InstallSnapshot<E>>(InstallSnapshot::new(snap_term, snap_index, rx)))
-            .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
-            .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
-            .map(move |_, _, _| {
-                debug!("Received final response from storage engine for snapshot stream.");
-                // This will be called after all snapshot chunks have been streamed in and
-                // we've received the final response from the storage engine.
-                let _ = finaltx.send(());
-            });
+        let f = fut::wrap_future(
+            self.storage
+                .send::<InstallSnapshot<E>>(InstallSnapshot::new(snap_term, snap_index, rx)),
+        )
+        .map_err(|err, act: &mut Self, ctx| {
+            act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage)
+        })
+        .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
+        .map(move |_, _, _| {
+            debug!("Received final response from storage engine for snapshot stream.");
+            // This will be called after all snapshot chunks have been streamed in and
+            // we've received the final response from the storage engine.
+            let _ = finaltx.send(());
+        });
         ctx.spawn(f);
 
-        match tx.unbounded_send(InstallSnapshotChunk{offset: msg.offset, data: msg.data, done: msg.done, cb: chunktx}) {
+        match tx.unbounded_send(InstallSnapshotChunk {
+            offset: msg.offset,
+            data: msg.data,
+            done: msg.done,
+            cb: chunktx,
+        }) {
             Ok(_) => (),
             Err(_) => {
                 error!("Error streaming snapshot chunks to storage engine. Channel was closed.");
@@ -186,11 +218,20 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     }
 
     fn handle_final_snapshot_chunk(
-        &mut self, _: &mut Context<Self>, msg: InstallSnapshotRequest, tx: mpsc::UnboundedSender<InstallSnapshotChunk>, finalrx: oneshot::Receiver<()>,
-    ) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+        &mut self,
+        _: &mut Context<Self>,
+        msg: InstallSnapshotRequest,
+        tx: mpsc::UnboundedSender<InstallSnapshotChunk>,
+        finalrx: oneshot::Receiver<()>,
+    ) -> Box<dyn ActorFuture<Actor = Self, Item = InstallSnapshotResponse, Error = ()>> {
         let (chunktx, chunkrx) = oneshot::channel();
         let (snap_index, snap_term) = (msg.last_included_index, msg.last_included_term);
-        match tx.unbounded_send(InstallSnapshotChunk{offset: msg.offset, data: msg.data, done: msg.done, cb: chunktx}) {
+        match tx.unbounded_send(InstallSnapshotChunk {
+            offset: msg.offset,
+            data: msg.data,
+            done: msg.done,
+            cb: chunktx,
+        }) {
             Ok(_) => (),
             Err(_) => {
                 error!("Error streaming snapshot chunks for storage engine. Channel was closed.");
@@ -224,10 +265,18 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
     }
 
     fn handle_snapshot_chunk(
-        &mut self, _: &mut Context<Self>, msg: InstallSnapshotRequest, tx: mpsc::UnboundedSender<InstallSnapshotChunk>,
-    ) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+        &mut self,
+        _: &mut Context<Self>,
+        msg: InstallSnapshotRequest,
+        tx: mpsc::UnboundedSender<InstallSnapshotChunk>,
+    ) -> Box<dyn ActorFuture<Actor = Self, Item = InstallSnapshotResponse, Error = ()>> {
         let (chunktx, chunkrx) = oneshot::channel();
-        match tx.unbounded_send(InstallSnapshotChunk{offset: msg.offset, data: msg.data, done: msg.done, cb: chunktx}) {
+        match tx.unbounded_send(InstallSnapshotChunk {
+            offset: msg.offset,
+            data: msg.data,
+            done: msg.done,
+            cb: chunktx,
+        }) {
             Ok(_) => (),
             Err(_) => {
                 error!("Error streaming snapshot chunks to storage engine. Channel was closed.");

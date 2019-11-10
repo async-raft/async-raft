@@ -5,7 +5,7 @@
 //! `Raft` actor is based entirely off of these messages and the messages in the `admin` module.
 
 use actix::prelude::*;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 use crate::{AppData, AppDataResponse, AppError, NodeId};
 
@@ -40,7 +40,7 @@ pub struct AppendEntriesRequest<D: AppData> {
     ///
     /// This may be empty when the leader is sending heartbeats. Entries
     /// may be batched for efficiency.
-    #[serde(bound="D: AppData")]
+    #[serde(bound = "D: AppData")]
     pub entries: Vec<Entry<D>>,
     /// The leader's commit index.
     pub leader_commit: u64,
@@ -91,14 +91,18 @@ pub struct Entry<D: AppData> {
     /// This entry's index.
     pub index: u64,
     /// This entry's payload.
-    #[serde(bound="D: AppData")]
+    #[serde(bound = "D: AppData")]
     pub payload: EntryPayload<D>,
 }
 
 impl<D: AppData> Entry<D> {
     /// Create a new snapshot pointer from the given data.
     pub fn new_snapshot_pointer(pointer: EntrySnapshotPointer, index: u64, term: u64) -> Self {
-        Entry{term, index, payload: EntryPayload::SnapshotPointer(pointer)}
+        Entry {
+            term,
+            index,
+            payload: EntryPayload::SnapshotPointer(pointer),
+        }
     }
 }
 
@@ -108,7 +112,7 @@ pub enum EntryPayload<D: AppData> {
     /// An empty payload committed by a new cluster leader.
     Blank,
     /// A normal log entry.
-    #[serde(bound="D: AppData")]
+    #[serde(bound = "D: AppData")]
     Normal(EntryNormal<D>),
     /// A config change log entry.
     ConfigChange(EntryConfigChange),
@@ -120,7 +124,7 @@ pub enum EntryPayload<D: AppData> {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EntryNormal<D: AppData> {
     /// The contents of this entry.
-    #[serde(bound="D: AppData")]
+    #[serde(bound = "D: AppData")]
     pub data: D,
 }
 
@@ -170,7 +174,7 @@ impl MembershipConfig {
     }
 
     /// Get an iterator over all nodes in the current config.
-    pub fn all_nodes(&self) -> impl Iterator<Item=&NodeId> {
+    pub fn all_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.members.iter().chain(self.non_voters.iter())
     }
 
@@ -219,8 +223,20 @@ impl Message for VoteRequest {
 
 impl VoteRequest {
     /// Create a new instance.
-    pub fn new(target: u64, term: u64, candidate_id: u64, last_log_index: u64, last_log_term: u64) -> Self {
-        Self{target, term, candidate_id, last_log_index, last_log_term}
+    pub fn new(
+        target: u64,
+        term: u64,
+        candidate_id: u64,
+        last_log_index: u64,
+        last_log_term: u64,
+    ) -> Self {
+        Self {
+            target,
+            term,
+            candidate_id,
+            last_log_index,
+            last_log_term,
+        }
     }
 }
 
@@ -310,7 +326,7 @@ pub struct InstallSnapshotResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClientPayload<D: AppData, R: AppDataResponse, E: AppError> {
     /// The application specific contents of this client request.
-    #[serde(bound="D: AppData")]
+    #[serde(bound = "D: AppData")]
     pub(crate) entry: EntryPayload<D>,
     /// The response mode needed by this request.
     pub(crate) response_mode: ResponseMode,
@@ -328,12 +344,20 @@ impl<D: AppData, R: AppDataResponse, E: AppError> ClientPayload<D, R, E> {
 
     /// Create a new instance.
     pub(crate) fn new_base(entry: EntryPayload<D>, response_mode: ResponseMode) -> Self {
-        Self{entry, response_mode, marker0: std::marker::PhantomData, marker1: std::marker::PhantomData}
+        Self {
+            entry,
+            response_mode,
+            marker0: std::marker::PhantomData,
+            marker1: std::marker::PhantomData,
+        }
     }
 
     /// Generate a new payload holding a config change.
     pub(crate) fn new_config(membership: MembershipConfig) -> Self {
-        Self::new_base(EntryPayload::ConfigChange(EntryConfigChange{membership}), ResponseMode::Committed)
+        Self::new_base(
+            EntryPayload::ConfigChange(EntryConfigChange { membership }),
+            ResponseMode::Committed,
+        )
     }
 
     /// Generate a new blank payload.
@@ -384,7 +408,7 @@ pub enum ClientPayloadResponse<R: AppDataResponse> {
         /// The log index of the successfully processed client request.
         index: u64,
         /// Application specific response data.
-        #[serde(bound="R: AppDataResponse")]
+        #[serde(bound = "R: AppDataResponse")]
         data: R,
     },
 }
@@ -393,20 +417,20 @@ impl<R: AppDataResponse> ClientPayloadResponse<R> {
     /// The index of the log entry corresponding to this response object.
     pub fn index(&self) -> u64 {
         match self {
-            Self::Committed{index} => *index,
-            Self::Applied{index, ..} => *index,
+            Self::Committed { index } => *index,
+            Self::Applied { index, .. } => *index,
         }
     }
 }
 
 /// Error variants which may arise while handling client requests.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag="type")]
+#[serde(tag = "type")]
 pub enum ClientError<D: AppData, R: AppDataResponse, E: AppError> {
     /// Some error which has taken place internally in Raft.
     Internal,
     /// An application specific error.
-    #[serde(bound="E: AppError")]
+    #[serde(bound = "E: AppError")]
     Application(E),
     /// The Raft node returning this error is not the Raft leader.
     ///
@@ -417,7 +441,7 @@ pub enum ClientError<D: AppData, R: AppDataResponse, E: AppError> {
     ///
     /// The process of electing a new leader is usually a very fast process in Raft, so buffering
     /// the client payload until the new leader is known should not cause a lot of overhead.
-    #[serde(bound="D: AppData, R: AppDataResponse, E: AppError")]
+    #[serde(bound = "D: AppData, R: AppDataResponse, E: AppError")]
     ForwardToLeader {
         /// The original payload which this error is associated with.
         payload: ClientPayload<D, R, E>,
@@ -431,10 +455,12 @@ impl<D: AppData, R: AppDataResponse, E: AppError> std::fmt::Display for ClientEr
         match self {
             ClientError::Internal => write!(f, "An internal error was encountered in Raft."),
             ClientError::Application(err) => write!(f, "{}", &err),
-            ClientError::ForwardToLeader{..} => write!(f, "The client payload must be forwarded to the Raft leader for processing."),
+            ClientError::ForwardToLeader { .. } => write!(
+                f,
+                "The client payload must be forwarded to the Raft leader for processing."
+            ),
         }
     }
 }
 
 impl<D: AppData, R: AppDataResponse, E: AppError> std::error::Error for ClientError<D, R, E> {}
-

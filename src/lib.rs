@@ -1,5 +1,5 @@
-#![cfg_attr(feature="docinclude", feature(external_doc))]
-#![cfg_attr(feature="docinclude", doc(include="../README.md"))]
+#![cfg_attr(feature = "docinclude", feature(external_doc))]
+#![cfg_attr(feature = "docinclude", doc(include = "../README.md"))]
 
 pub mod admin;
 mod common;
@@ -11,15 +11,15 @@ mod raft;
 mod replication;
 pub mod storage;
 
+use serde::{de::DeserializeOwned, Serialize};
 use std::{error::Error, fmt::Debug};
-use serde::{Serialize, de::DeserializeOwned};
 
 // Top-level exports.
 pub use crate::{
     config::{Config, ConfigBuilder, SnapshotPolicy},
-    raft::Raft,
     metrics::RaftMetrics,
     network::RaftNetwork,
+    raft::Raft,
     storage::RaftStorage,
 };
 
@@ -44,7 +44,10 @@ pub trait AppData: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 
 /// used during replication). This allows applications to seamlessly return application specific
 /// data from their storage layer, up through Raft, and back into their application for returning
 /// data to clients or other such uses.
-pub trait AppDataResponse: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static {}
+pub trait AppDataResponse:
+    Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static
+{
+}
 
 /// A trait defining application specific error types.
 ///
