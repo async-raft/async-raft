@@ -1,6 +1,9 @@
 changelog
 =========
 ### 0.4
+#### 0.4.4
+- Implement `Default` for `InitialState`, `HardState` and `MembershipConfig`.
+
 #### 0.4.3
 Added a few convenience derivations.
 

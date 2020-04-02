@@ -43,7 +43,7 @@ impl<E: AppError> Message for GetInitialState<E> {
 }
 
 /// A struct used to represent the initial state which a Raft node needs when first starting.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct InitialState {
     /// The index of the last entry.
     pub last_log_index: u64,
@@ -317,7 +317,7 @@ impl<E: AppError> Message for SaveHardState<E> {
 ///
 /// This model derives serde's traits for easily (de)serializing this
 /// model for storage & retrieval.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct HardState {
     /// The last recorded term observed by this system.
     pub current_term: u64,
