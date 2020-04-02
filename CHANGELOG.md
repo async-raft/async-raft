@@ -2,6 +2,7 @@ changelog
 =========
 ### 0.4
 #### 0.4.4
+- Implement `Error` for `config::ConfigError`
 - Implement `Default` for `InitialState`, `HardState` and `MembershipConfig`.
 
 #### 0.4.3
