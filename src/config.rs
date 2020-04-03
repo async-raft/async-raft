@@ -9,11 +9,11 @@ use log::{error};
 use rand::{thread_rng, Rng};
 
 /// Default election timeout minimum.
-pub const DEFAULT_ELECTION_TIMEOUT_MIN: u16 = 200;
+pub const DEFAULT_ELECTION_TIMEOUT_MIN: u64 = 200;
 /// Default election timeout maximum.
-pub const DEFAULT_ELECTION_TIMEOUT_MAX: u16 = 300;
+pub const DEFAULT_ELECTION_TIMEOUT_MAX: u64 = 300;
 /// Default heartbeat interval.
-pub const DEFAULT_HEARTBEAT_INTERVAL: u16 = 50;
+pub const DEFAULT_HEARTBEAT_INTERVAL: u64 = 50;
 /// Default threshold for when to trigger a snapshot.
 pub const DEFAULT_LOGS_SINCE_LAST: u64 = 5000;
 /// Default maximum number of entries per replication payload.
@@ -65,11 +65,11 @@ impl Default for SnapshotPolicy {
 /// a real leader crash would cause prolonged downtime. See the Raft spec §5.6 for more details.
 #[derive(Debug)]
 pub struct Config {
-    /// The election timeout used for a Raft node when it is a follower.
-    ///
-    /// This value is randomly generated based on default confguration or a given min & max. The
-    /// default value will be between 200-300 milliseconds.
-    pub election_timeout_millis: u64,
+    /// The election timeout range used for a Raft node, in milliseconds.
+    /// A random election timeout within this range will be generated while updating the election timeout.
+    pub election_timeout_min: u64,
+    pub election_timeout_max: u64,
+
     /// The heartbeat interval at which leaders will send heartbeats to followers.
     ///
     /// Defaults to 50 milliseconds.
@@ -120,6 +120,11 @@ impl Config {
             snapshot_max_chunk_size: None,
         }
     }
+
+    /// Generate a random election timeout.
+    pub fn generate_election_timeout(&self) -> u64 {
+        thread_rng().gen_range(self.election_timeout_min, self.election_timeout_max)
+    }
 }
 
 /// A configuration builder to ensure that the Raft's runtime config is valid.
@@ -129,11 +134,11 @@ impl Config {
 #[derive(Debug)]
 pub struct ConfigBuilder {
     /// The minimum election timeout in milliseconds.
-    pub election_timeout_min: Option<u16>,
+    pub election_timeout_min: Option<u64>,
     /// The maximum election timeout in milliseconds.
-    pub election_timeout_max: Option<u16>,
+    pub election_timeout_max: Option<u64>,
     /// The interval at which leaders will send heartbeats to followers to avoid election timeout.
-    pub heartbeat_interval: Option<u16>,
+    pub heartbeat_interval: Option<u64>,
     /// The maximum number of entries per payload allowed to be transmitted during replication.
     pub max_payload_entries: Option<u64>,
     /// The rate at which metrics will be pumped out from the Raft node.
@@ -148,19 +153,19 @@ pub struct ConfigBuilder {
 
 impl ConfigBuilder {
     /// Set the desired value for `election_timeout_min`.
-    pub fn election_timeout_min(mut self, val: u16) -> Self {
+    pub fn election_timeout_min(mut self, val: u64) -> Self {
         self.election_timeout_min = Some(val);
         self
     }
 
     /// Set the desired value for `election_timeout_max`.
-    pub fn election_timeout_max(mut self, val: u16) -> Self {
+    pub fn election_timeout_max(mut self, val: u64) -> Self {
         self.election_timeout_max = Some(val);
         self
     }
 
     /// Set the desired value for `heartbeat_interval`.
-    pub fn heartbeat_interval(mut self, val: u16) -> Self {
+    pub fn heartbeat_interval(mut self, val: u64) -> Self {
         self.heartbeat_interval = Some(val);
         self
     }
@@ -198,24 +203,22 @@ impl ConfigBuilder {
         })?;
 
         // Roll a random election time out based on the configured min & max or their respective defaults.
-        let election_min = self.election_timeout_min.unwrap_or(DEFAULT_ELECTION_TIMEOUT_MIN);
-        let election_max = self.election_timeout_max.unwrap_or(DEFAULT_ELECTION_TIMEOUT_MAX);
-        if election_min >= election_max {
+        let election_timeout_min = self.election_timeout_min.unwrap_or(DEFAULT_ELECTION_TIMEOUT_MIN);
+        let election_timeout_max = self.election_timeout_max.unwrap_or(DEFAULT_ELECTION_TIMEOUT_MAX);
+        if election_timeout_min >= election_timeout_max {
             return Err(ConfigError::InvalidElectionTimeoutMinMax);
         }
-        let mut rng = thread_rng();
-        let election_timeout: u16 = rng.gen_range(election_min, election_max);
-        let election_timeout_millis = election_timeout as u64;
 
         // Get other values or their defaults.
-        let heartbeat_interval = self.heartbeat_interval.unwrap_or(DEFAULT_HEARTBEAT_INTERVAL) as u64;
+        let heartbeat_interval = self.heartbeat_interval.unwrap_or(DEFAULT_HEARTBEAT_INTERVAL);
         let max_payload_entries = self.max_payload_entries.unwrap_or(DEFAULT_MAX_PAYLOAD_ENTRIES);
         let metrics_rate = self.metrics_rate.unwrap_or(DEFAULT_METRICS_RATE);
         let snapshot_policy = self.snapshot_policy.unwrap_or_else(|| SnapshotPolicy::default());
         let snapshot_max_chunk_size = self.snapshot_max_chunk_size.unwrap_or(DEFAULT_SNAPSHOT_CHUNKSIZE);
 
         Ok(Config{
-            election_timeout_millis,
+            election_timeout_min,
+            election_timeout_max,
             heartbeat_interval,
             max_payload_entries,
             metrics_rate,
@@ -256,8 +259,9 @@ mod tests {
         let dirstring = dir.path().to_string_lossy().to_string();
         let cfg = Config::build(dirstring.clone()).validate().unwrap();
 
-        assert!(cfg.election_timeout_millis >= DEFAULT_ELECTION_TIMEOUT_MIN as u64);
-        assert!(cfg.election_timeout_millis <= DEFAULT_ELECTION_TIMEOUT_MAX as u64);
+        let election_timeout = cfg.generate_election_timeout();
+        assert!(election_timeout >= DEFAULT_ELECTION_TIMEOUT_MIN as u64);
+        assert!(election_timeout <= DEFAULT_ELECTION_TIMEOUT_MAX as u64);
         assert!(cfg.heartbeat_interval == DEFAULT_HEARTBEAT_INTERVAL as u64);
         assert!(cfg.max_payload_entries == DEFAULT_MAX_PAYLOAD_ENTRIES);
         assert!(cfg.metrics_rate == DEFAULT_METRICS_RATE);
@@ -280,8 +284,9 @@ mod tests {
             .snapshot_policy(SnapshotPolicy::Disabled)
             .validate().unwrap();
 
-        assert!(cfg.election_timeout_millis >= 100);
-        assert!(cfg.election_timeout_millis <= 200);
+        let election_timeout = cfg.generate_election_timeout();
+        assert!(election_timeout >= 100);
+        assert!(election_timeout <= 200);
         assert!(cfg.heartbeat_interval == 10);
         assert!(cfg.max_payload_entries == 100);
         assert!(cfg.max_payload_entries == 100);

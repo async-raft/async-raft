@@ -151,7 +151,11 @@ pub struct Raft<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, 
     _apply_logs_pipeline_receiver: Option<mpsc::UnboundedReceiver<ApplyLogsTask<D, R, E>>>,
 
     /// A handle to the election timeout callback.
-    election_timeout: Option<actix::SpawnHandle>,
+    election_timer: Option<actix::SpawnHandle>,
+
+    /// Election timeout before next election, in milliseconds.
+    election_timeout: u64,
+
     /// The currently scheduled election timeout.
     election_timeout_stamp: Option<Instant>,
 }
@@ -167,13 +171,15 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         let (tx, rx) = mpsc::unbounded();
         let membership = MembershipConfig{is_in_joint_consensus: false, members: vec![id], non_voters: vec![], removing: vec![]};
         Self{
-            id, config, membership, state, network, storage, metrics,
+            id, config: config.clone(), membership, state, network, storage, metrics,
             commit_index: 0, last_applied: 0,
             current_term: 0, current_leader: None, voted_for: None,
             last_log_index: 0, last_log_term: 0,
             is_appending_logs: false,
             apply_logs_pipeline: tx, _apply_logs_pipeline_receiver: Some(rx),
-            election_timeout: None, election_timeout_stamp: None,
+            election_timer: None, 
+            election_timeout: config.generate_election_timeout(),
+            election_timeout_stamp: None,
         }
     }
 
@@ -535,9 +541,10 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         // Cancel any current election timeout before spawning a new one.
         self.cancel_election_timeout(ctx);
 
-        let timeout = Duration::from_millis(self.config.election_timeout_millis);
+        self.election_timeout = self.config.generate_election_timeout();
+        let timeout = Duration::from_millis(self.election_timeout);
         self.election_timeout_stamp = Some(Instant::now() + timeout.clone());
-        self.election_timeout = Some(ctx.run_interval(timeout, |act, ctx| {
+        self.election_timer = Some(ctx.run_interval(timeout, |act, ctx| {
             if let Some(stamp) = &act.election_timeout_stamp {
                 if &Instant::now() >= stamp {
                     act.become_candidate(ctx)
@@ -548,13 +555,13 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
     /// Update the election timeout stamp, typically due to receiving a heartbeat from the Raft leader.
     fn update_election_timeout_stamp(&mut self) {
-        self.election_timeout_stamp = Some(Instant::now() + Duration::from_millis(self.config.election_timeout_millis));
+        self.election_timeout_stamp = Some(Instant::now() + Duration::from_millis(self.election_timeout));
     }
 
     /// Cancel the current election timeout task if present & clean-up the election timeout stamp.
     fn cancel_election_timeout(&mut self, ctx: &mut Context<Self>) {
         self.election_timeout_stamp = None;
-        if let Some(handle) = self.election_timeout.take() {
+        if let Some(handle) = self.election_timer.take() {
             ctx.cancel_future(handle);
         }
     }

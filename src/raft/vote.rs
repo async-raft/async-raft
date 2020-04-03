@@ -47,6 +47,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
         if &msg.term > &self.current_term {
             self.update_current_term(msg.term, None);
             self.save_hard_state(ctx);
+            self.become_follower(ctx);
         }
 
         // Check if candidate's log is at least as up-to-date as this node's.
@@ -68,7 +69,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             None => {
                 self.voted_for = Some(msg.candidate_id);
                 self.save_hard_state(ctx);
-                self.update_election_timeout_stamp();
+                self.update_election_timeout(ctx);
                 self.become_follower(ctx);
                 Ok(VoteResponse{term: self.current_term, vote_granted: true, is_candidate_unknown: false})
             },
