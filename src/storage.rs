@@ -6,7 +6,7 @@ use actix::{
     dev::ToEnvelope,
     prelude::*,
 };
-use futures::sync::{mpsc::UnboundedReceiver, oneshot::Sender};
+use futures::channel::{mpsc::UnboundedReceiver, oneshot::Sender};
 use serde::{Serialize, Deserialize};
 
 use crate::{

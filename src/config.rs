@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_invalid_path_returns_expected_error() {
-        let res = Config::build("/dev/someinvalidpath/definitely/doesn't/exist".to_string()).validate();
+        let res = Config::build("here/invalid_:;@\0_characters".to_string()).validate();
         assert!(res.is_err());
         let err = res.unwrap_err();
         assert_eq!(err, ConfigError::InvalidSnapshotDir);

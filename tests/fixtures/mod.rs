@@ -14,10 +14,11 @@ use actix_raft::{
     NodeId, Raft,
     config::{Config, SnapshotPolicy},
     messages::{ClientPayload, ClientError, EntryNormal, ResponseMode},
+    try_fut::TryActorFutureExt,
 };
 use async_log;
 use env_logger;
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 use log::{debug};
 use tempfile::{tempdir_in, TempDir};
 
@@ -74,6 +75,7 @@ impl Actor for RaftTestController {
 
 /// Send a client request to the Raft cluster, ensuring it is resent on failures.
 #[derive(Message)]
+#[rtype(result = "()")]
 pub struct ClientRequest {
     pub payload: u64,
     pub current_leader: Option<NodeId>,
@@ -90,18 +92,16 @@ impl Handler<ClientRequest> for RaftTestController {
             let node = self.nodes.get(leader).expect("Expected leader to be present it RaftTestController's nodes map.");
             let f = fut::wrap_future(node.send(payload))
                 .map_err(|_, _, _| ClientError::Internal).and_then(|res, _, _| fut::result(res))
-                .then(move |res, _, ctx: &mut Context<Self>| match res {
+                .map(move |res, _, ctx: &mut Context<Self>| match res {
                     Ok(_) => {
                         if let Some(tx) = msg.cb {
                             let _ = tx.send(()).expect("Failed to send callback message on test's ClientRequest.");
                         }
-                        fut::ok(())
                     },
                     Err(err) => match err {
                         ClientError::Internal => {
                             debug!("TEST: resending client request.");
                             ctx.notify(msg);
-                            fut::ok(())
                         }
                         ClientError::Application(err) => {
                             panic!("Unexpected application error from client request: {:?}", err)
@@ -110,7 +110,6 @@ impl Handler<ClientRequest> for RaftTestController {
                             debug!("TEST: received ForwardToLeader error. Updating leader and forwarding.");
                             msg.current_leader = leader;
                             ctx.notify(msg);
-                            fut::ok(())
                         }
                     }
                 });
@@ -121,15 +120,13 @@ impl Handler<ClientRequest> for RaftTestController {
                 let f = fut::wrap_future(act.network.send(GetCurrentLeader))
                     .map_err(|err, _, _| panic!("{}", err))
                     .and_then(|res, _, _| fut::result(res))
-                    .then(move |res, _, ctx: &mut Context<Self>| match res {
+                    .map(move |res, _, ctx: &mut Context<Self>| match res {
                         Ok(current_leader) => {
                             msg.current_leader = current_leader;
                             ctx.notify(msg);
-                            fut::ok(())
                         }
                         Err(_) => {
                             ctx.notify(msg);
-                            fut::ok(())
                         }
                     });
                 ctx.spawn(f);

@@ -13,13 +13,14 @@ repository = "https://github.com/railgun-rs/actix-raft"
 readme = "README.md"
 
 [dependencies]
-actix = "0.8"
-bytes = "0.4"
-futures = "0.1"
+actix = "0.9.0"
+bytes = "0.5.4"
+futures = "0.3.4"
 log = "0.4"
-rand = "0.6"
+rand = "0.7.3"
 serde = { version="1", features=["derive"] }
-tokio-timer = "0.2"
+tokio = { version = "0.2", features = ["time"] }
+pin-utils = "0.1.0-alpha.4"
 
 [dev-dependencies]
 async-log = "2"

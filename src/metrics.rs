@@ -42,6 +42,7 @@ pub enum State {
 /// See the [module level documentation](https://docs.rs/actix-raft/latest/actix_raft/metrics/index.html)
 /// for more details.
 #[derive(Clone, Debug, Message, PartialEq, Eq)]
+#[rtype(result = "()")]
 pub struct RaftMetrics {
     /// The ID of the Raft node.
     pub id: NodeId,

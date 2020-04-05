@@ -1,6 +1,6 @@
 use actix::prelude::*;
 use log::{debug, error};
-use futures::sync::{mpsc, oneshot};
+use futures::channel::{mpsc, oneshot};
 
 use crate::{
     AppData, AppDataResponse, AppError,
@@ -9,10 +9,11 @@ use crate::{
     messages::{InstallSnapshotRequest, InstallSnapshotResponse},
     raft::{RaftState, Raft, SnapshotState},
     storage::{InstallSnapshot, InstallSnapshotChunk, RaftStorage},
+    try_fut::TryActorFutureExt,
 };
 
 impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<InstallSnapshotRequest> for Raft<D, R, E, N, S> {
-    type Result = ResponseActFuture<Self, InstallSnapshotResponse, ()>;
+    type Result = ResponseActFuture<Self, Result<InstallSnapshotResponse, ()>>;
 
     /// Invoked by leader to send chunks of a snapshot to a follower (§7).
     ///
@@ -91,7 +92,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
 impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Raft<D, R, E, N, S> {
     // Install a new snapshot which was small enough to fit into a single frame.
-    fn handle_mini_snapshot(&mut self, ctx: &mut Context<Self>, msg: InstallSnapshotRequest) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+    fn handle_mini_snapshot(&mut self, ctx: &mut Context<Self>, msg: InstallSnapshotRequest) -> ResponseActFuture<Self, Result<InstallSnapshotResponse, ()>> {
         let (tx, rx) = mpsc::unbounded();
         let (chunktx, chunkrx) = oneshot::channel();
         let (finaltx, finalrx) = oneshot::channel();
@@ -142,7 +143,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             }))
     }
 
-    fn handle_snapshot_stream(&mut self, ctx: &mut Context<Self>, msg: InstallSnapshotRequest) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+    fn handle_snapshot_stream(&mut self, ctx: &mut Context<Self>, msg: InstallSnapshotRequest) -> ResponseActFuture<Self, Result<InstallSnapshotResponse, ()>> {
         let (tx, rx) = mpsc::unbounded();
         let (chunktx, chunkrx) = oneshot::channel();
         let (finaltx, finalrx) = oneshot::channel();
@@ -187,7 +188,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
     fn handle_final_snapshot_chunk(
         &mut self, _: &mut Context<Self>, msg: InstallSnapshotRequest, tx: mpsc::UnboundedSender<InstallSnapshotChunk>, finalrx: oneshot::Receiver<()>,
-    ) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+    ) -> ResponseActFuture<Self, Result<InstallSnapshotResponse, ()>> {
         let (chunktx, chunkrx) = oneshot::channel();
         let (snap_index, snap_term) = (msg.last_included_index, msg.last_included_term);
         match tx.unbounded_send(InstallSnapshotChunk{offset: msg.offset, data: msg.data, done: msg.done, cb: chunktx}) {
@@ -225,7 +226,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
     fn handle_snapshot_chunk(
         &mut self, _: &mut Context<Self>, msg: InstallSnapshotRequest, tx: mpsc::UnboundedSender<InstallSnapshotChunk>,
-    ) -> Box<dyn ActorFuture<Actor=Self, Item=InstallSnapshotResponse, Error=()>> {
+    ) -> ResponseActFuture<Self, Result<InstallSnapshotResponse, ()>> {
         let (chunktx, chunkrx) = oneshot::channel();
         match tx.unbounded_send(InstallSnapshotChunk{offset: msg.offset, data: msg.data, done: msg.done, cb: chunktx}) {
             Ok(_) => (),

@@ -11,6 +11,9 @@ mod raft;
 mod replication;
 pub mod storage;
 
+#[doc(hidden)]
+pub mod try_fut;
+
 use std::{error::Error, fmt::Debug};
 use serde::{Serialize, de::DeserializeOwned};
 

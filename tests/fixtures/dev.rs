@@ -15,6 +15,7 @@ use actix_raft::{
     },
     network::RaftNetwork,
     metrics::{RaftMetrics, State},
+    try_fut::TryActorFutureExt,
 };
 use log::{debug};
 
@@ -76,7 +77,7 @@ impl Actor for RaftRouter {
 impl RaftNetwork<MemoryStorageData> for RaftRouter {}
 
 impl Handler<AppendEntriesRequest<MemoryStorageData>> for RaftRouter {
-    type Result = ResponseActFuture<Self, AppendEntriesResponse, ()>;
+    type Result = ResponseActFuture<Self, Result<AppendEntriesResponse, ()>>;
 
     fn handle(&mut self, msg: AppendEntriesRequest<MemoryStorageData>, _: &mut Self::Context) -> Self::Result {
         self.routed.0 += 1;
@@ -91,7 +92,7 @@ impl Handler<AppendEntriesRequest<MemoryStorageData>> for RaftRouter {
 }
 
 impl Handler<VoteRequest> for RaftRouter {
-    type Result = ResponseActFuture<Self, VoteResponse, ()>;
+    type Result = ResponseActFuture<Self, Result<VoteResponse, ()>>;
 
     fn handle(&mut self, msg: VoteRequest, _: &mut Self::Context) -> Self::Result {
         self.routed.1 += 1;
@@ -106,7 +107,7 @@ impl Handler<VoteRequest> for RaftRouter {
 }
 
 impl Handler<InstallSnapshotRequest> for RaftRouter {
-    type Result = ResponseActFuture<Self, InstallSnapshotResponse, ()>;
+    type Result = ResponseActFuture<Self, Result<InstallSnapshotResponse, ()>>;
 
     fn handle(&mut self, msg: InstallSnapshotRequest, _: &mut Self::Context) -> Self::Result {
         self.routed.2 += 1;
@@ -178,6 +179,7 @@ impl Handler<GetCurrentLeader> for RaftRouter {
 // Register //////////////////////////////////////////////////////////////////
 
 #[derive(Message)]
+#[rtype(result = "()")]
 pub struct Register {
     pub id: NodeId,
     pub addr: Addr<MemRaft>,

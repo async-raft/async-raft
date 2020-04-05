@@ -7,6 +7,7 @@ use crate::{
     network::RaftNetwork,
     replication::{ReplicationStream, RSState},
     storage::{RaftStorage},
+    try_fut::TryActorFutureExt,
 };
 
 impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> ReplicationStream<D, R, E, N, S> {
@@ -42,17 +43,18 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                     match res {
                         Ok(_) => {
                             act.drive_state(ctx);
-                            fut::Either::A(fut::result(res))
+                            fut::Either::Left(fut::result(res))
                         }
                         Err(_) => {
-                            fut::Either::B(act.transition_to_lagging(ctx)
+                            fut::Either::Right(act.transition_to_lagging(ctx)
                                 .then(|res, act, ctx| {
                                     act.drive_state(ctx);
                                     fut::result(res)
                                 }))
                         }
                     }
-                });
+                })
+                .or_default();
             ctx.spawn(f);
         } else {
             self.is_driving_state = false;

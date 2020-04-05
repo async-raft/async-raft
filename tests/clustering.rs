@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use actix::prelude::*;
 use actix_raft::metrics::{RaftMetrics, State};
-use futures::sync::oneshot;
+use actix_raft::try_fut::TryActorFutureExt;
+use futures::channel::oneshot;
 
 use fixtures::{
     RaftTestController, Node, setup_logger,
@@ -103,7 +104,7 @@ fn clustering() {
                     })));
                 });
                 fut::ok(())
-            }));
+            }).or_default());
 
         // Give the old node some time to rejoin, then assert that the new leader remains, new
         // term remains, and the old node is a follower of the new leader.
@@ -126,7 +127,7 @@ fn clustering() {
                     })));
                 });
                 fut::ok(())
-            }));
+            }).or_default());
     }));
 
     // Run the test.

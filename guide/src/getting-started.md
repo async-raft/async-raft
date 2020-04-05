@@ -86,7 +86,7 @@ impl RaftNetwork<Data> for AppNetwork {}
 // Then you just implement the various message handlers.
 // See the network chapter for details.
 impl Handler<messages::AppendEntriesRequest<Data>> for AppNetwork {
-    type Result = ResponseActFuture<Self, messages::AppendEntriesResponse, ()>;
+    type Result = ResponseActFuture<Self, Result<messages::AppendEntriesResponse, ()>>;
 
     fn handle(&mut self, _msg: messages::AppendEntriesRequest<Data>, _ctx: &mut Self::Context) -> Self::Result {
         // ... snip ...
@@ -121,7 +121,7 @@ impl Actor for AppStorage {
 // Then you just implement the various message handlers.
 // See the storage chapter for details.
 impl Handler<storage::GetInitialState<Error>> for AppStorage {
-    type Result = ResponseActFuture<Self, storage::InitialState, Error>;
+    type Result = ResponseActFuture<Self, Result<storage::InitialState, Error>>;
 
     fn handle(&mut self, _msg: storage::GetInitialState<Error>, _ctx: &mut Self::Context) -> Self::Result {
         // ... snip ...

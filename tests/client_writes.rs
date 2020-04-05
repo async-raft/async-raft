@@ -2,11 +2,13 @@
 
 mod fixtures;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use actix::prelude::*;
 use actix_raft::metrics::{RaftMetrics, State};
-use tokio_timer::Delay;
+use actix_raft::try_fut::TryActorFutureExt;
+use tokio::time::delay_for;
+use futures::future::FutureExt;
 
 use fixtures::{
     ClientRequest, RaftTestController, Node, setup_logger,
@@ -51,7 +53,8 @@ fn client_writes() {
         // Get the current leader.
         ctx.spawn(fut::wrap_future(act.network.send(GetCurrentLeader))
             .map_err(|_, _: &mut RaftTestController, _| panic!("Failed to get current leader."))
-            .and_then(|res, _, _| fut::result(res)).and_then(|leader_opt, _, _| {
+            .and_then(|res, _, _| fut::result(res))
+            .and_then(|leader_opt, _, _| {
                 let leader = leader_opt.expect("Expected the cluster to have elected a leader.");
                 fut::ok(leader)
             })
@@ -60,15 +63,15 @@ fn client_writes() {
                 for idx in 0..100 {
                     ctx.notify(ClientRequest{payload: idx, current_leader: Some(leader), cb: None});
                 }
-                fut::wrap_future(Delay::new(Instant::now() + Duration::from_secs(1))).map_err(|_, _, _| ())
-                    .map(move |_, _, _| leader)
+                fut::wrap_future(delay_for(Duration::from_secs(1)))
+                    .map(move |_, _, _| Ok(leader))
             })
 
             // Bring down the current leader.
             .and_then(|leader, act, _| {
                 act.network.do_send(ExecuteInRaftRouter(Box::new(move |act, _| act.isolate_node(leader))));
-                fut::wrap_future(Delay::new(Instant::now() + Duration::from_secs(2))).map_err(|_, _, _| ())
-                    .map(move |_, _, _| leader)
+                fut::wrap_future(delay_for(Duration::from_secs(2)))
+                    .map(move |_, _, _| Ok(leader))
             })
 
             // Get new leader ID.
@@ -76,7 +79,7 @@ fn client_writes() {
                 fut::wrap_future(act.network.send(GetCurrentLeader))
                 .map_err(|_, _: &mut RaftTestController, _| panic!("Failed to get current leader."))
                 .and_then(|res, _, _| fut::result(res))
-                .map(move |current_leader, _, _| (current_leader, old_leader))
+                .map_ok(move |current_leader, _, _| (current_leader, old_leader))
             })
 
             // Restore old node, send 100 more requests & wait for 3 second for the system to process.
@@ -85,7 +88,7 @@ fn client_writes() {
                 for idx in 0..100 {
                     ctx.notify(ClientRequest{payload: idx, current_leader, cb: None});
                 }
-                fut::wrap_future(Delay::new(Instant::now() + Duration::from_secs(10))).map_err(|_, _, _| ())
+                fut::wrap_future(delay_for(Duration::from_secs(10)).map(Ok))
             })
 
             // Assert that all nodes are up, same leader, same final state from the standpoint of the metrics.
@@ -140,7 +143,8 @@ fn client_writes() {
                         fut::ok(())
                     })
             })
-            .map_err(|err, _, _| panic!("Failure during test. {:?}", err)));
+            .map_err(|err, _, _| panic!("Failure during test. {:?}", err))
+            .or_default());
     }));
 
     // Run the test.

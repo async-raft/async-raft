@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use futures::sync::oneshot;
+use futures::channel::oneshot;
 
 use crate::{
     AppData, AppDataResponse, AppError, NodeId,

@@ -2,7 +2,7 @@
 
 mod fixtures;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use actix::prelude::*;
 use actix_raft::{
@@ -10,8 +10,10 @@ use actix_raft::{
     messages::{ClientError, EntryNormal, ResponseMode},
     metrics::{State},
 };
+use actix_raft::try_fut::{TryActorFutureExt, TryActorStreamExt};
 use log::{error};
-use tokio_timer::Delay;
+use tokio::time::delay_for;
+use futures::future::FutureExt;
 
 use fixtures::{
     Payload, RaftTestController, Node, setup_logger,
@@ -75,25 +77,22 @@ fn dynamic_membership() {
                 fut::wrap_future(leader.send(ProposeConfigChange::new(vec![3], vec![leader_id])))
                     .map_err(|_, _: &mut RaftTestController, _| panic!("Messaging error while proposing config change to leader."))
                     .and_then(|res, _, _| fut::ok(res.expect("Failed to propose config change to leader.")))
-                    .map(move |_, _, _| leader_id)
+                    .map_ok(move |_, _, _| leader_id)
             })
             // Delay for a bit to ensure we can target a new leader in the test.
-            .and_then(|leader_id, _, _| fut::wrap_future(Delay::new(Instant::now() + Duration::from_secs(6)))
-                .map_err(|_, _, _| ())
-                .map(move |_, _, _| leader_id))
+            .and_then(|leader_id, _, _| fut::wrap_future(delay_for(Duration::from_secs(6)).map(Ok))
+                .map_ok(move |_, _, _| leader_id))
             // Remove old node.
             .and_then(|leader_id, act, _| {
                 fut::wrap_future(act.network.send(RemoveNodeFromCluster{id: leader_id}))
                     .map_err(|_, _: &mut RaftTestController, _| panic!("Messaging error while attempting to remove old node."))
                     .and_then(|res, _, _| fut::result(res))
                     .map_err(|err, _, _| panic!(err))
-                    .map(move |_, _, _| leader_id)
+                    .map_ok(move |_, _, _| leader_id)
             })
             // Write some additional data to the new leader.
-            .and_then(|old_leader_id, act, ctx| act.write_data(ctx).map(move |_, _, _| old_leader_id))
-            .and_then(|old_leader_id, _, _| fut::wrap_future(Delay::new(Instant::now() + Duration::from_secs(6))
-                .map_err(|_| ()))
-                .map(move |_, _, _| old_leader_id))
+            .and_then(|old_leader_id, act, ctx| act.write_data(ctx).map_ok(move |_, _, _| old_leader_id))
+            .and_then(|old_leader_id, _, _| fut::wrap_future(delay_for(Duration::from_secs(6)).map(move |_| Ok(old_leader_id))))
 
             // Assert against the state of all nodes in the cluster.
             .and_then(|old_leader_id, act, _| {
@@ -127,7 +126,8 @@ fn dynamic_membership() {
                 fut::ok(())
             })
 
-            .map_err(|err, _, _| panic!("Failure during test. {:?}", err));
+            .map_err(|err, _, _| panic!("Failure during test. {:?}", err))
+            .or_default();
         ctx.spawn(task);
     }));
 
@@ -136,7 +136,7 @@ fn dynamic_membership() {
 }
 
 impl RaftTestController {
-    fn write_data(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Item=(), Error=()> {
+    fn write_data(&mut self, _: &mut Context<Self>) -> impl ActorFuture<Actor=Self, Output=Result<(), ()>> {
         fut::wrap_future(self.network.send(GetCurrentLeader))
             .map_err(|_, _: &mut Self, _| panic!("Failed to get current leader."))
             .and_then(|res, _, _| fut::result(res))
@@ -146,8 +146,8 @@ impl RaftTestController {
                 let addr = act.nodes.get(&leader_id).expect("Expected leader to be present it RaftTestController's nodes map.");
                 let leader = addr.clone();
 
-                fut::wrap_stream(futures::stream::iter_ok(0..num_requests))
-                    .and_then(move |data, _, _| {
+                fut::wrap_stream(futures::stream::iter(0..num_requests))
+                    .then(move |data, _, _| {
                         let entry = EntryNormal{data: MemoryStorageData{data: data.to_string().into_bytes()}};
                         let payload = Payload::new(entry, ResponseMode::Applied);
                         fut::wrap_future(leader.clone().send(payload))
@@ -161,7 +161,7 @@ impl RaftTestController {
                                 }
                             })
                     })
-                    .finish()
+                    .try_finish()
             })
     }
 }

@@ -5,7 +5,7 @@ use std::{
 };
 
 use actix::prelude::*;
-use futures::sync::{mpsc, oneshot};
+use futures::channel::{mpsc, oneshot};
 
 use crate::{
     AppData, AppDataResponse, AppError, NodeId,

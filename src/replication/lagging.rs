@@ -1,8 +1,9 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use futures::future::FutureExt;
 use actix::prelude::*;
 use log::{debug};
-use tokio_timer::Delay;
+use tokio::time::delay_for;
 
 use crate::{
     AppData, AppDataResponse, AppError,
@@ -12,6 +13,7 @@ use crate::{
     network::RaftNetwork,
     replication::{ReplicationStream, RSRateUpdate, RSState},
     storage::{RaftStorage, GetLogEntries},
+    try_fut::TryActorFutureExt,
 };
 
 impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> ReplicationStream<D, R, E, N, S> {
@@ -40,7 +42,8 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                         act.is_driving_state = false;
                         act.drive_state(ctx);
                         fut::ok(())
-                    });
+                    })
+                    .or_default();
                 ctx.spawn(f);
                 return;
             }
@@ -56,11 +59,11 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 
                 // Update Raft actor with replication rate change.
                 let event = RSRateUpdate{target: self.target, is_line_rate: true};
-                fut::Either::A(fut::wrap_future(self.raftnode.send(event))
+                fut::Either::Left(fut::wrap_future(self.raftnode.send(event))
                     .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftInternal))
-                    .map(move |_, _, _| stop_idx))
+                    .map_ok(move |_, _, _| stop_idx))
             } else {
-                fut::Either::B(fut::ok(self.next_index + self.config.max_payload_entries))
+                fut::Either::Right(fut::ok(self.next_index + self.config.max_payload_entries))
             })
 
             // Bringing the target up-to-date by fetching the largest possible payload of entries
@@ -78,7 +81,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                     match entry.payload {
                         EntryPayload::SnapshotPointer(_) => {
                             act.transition_to_snapshotting(ctx);
-                            return fut::Either::A(fut::err(()));
+                            return fut::Either::Left(fut::err(()));
                         }
                         _ => continue,
                     }
@@ -90,7 +93,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                     prev_log_index, prev_log_term, // NOTE: these are moved in from above.
                     entries, leader_commit: act.line_commit,
                 };
-                fut::Either::B(act.send_append_entries(ctx, payload)
+                fut::Either::Right(act.send_append_entries(ctx, payload)
                     .and_then(move |res, act, ctx| act.handle_append_entries_response(ctx, res, last_log_and_index)))
             })
 
@@ -98,29 +101,24 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
             .and_then(|_, act, ctx| {
                 match &act.state {
                     RSState::Lagging(inner) if inner.is_ready_for_line_rate => {
-                        fut::Either::A(act.transition_to_line_rate(ctx))
+                        fut::Either::Left(act.transition_to_line_rate(ctx))
                     }
-                    _ => fut::Either::B(fut::ok(())),
+                    _ => fut::Either::Right(fut::ok(())),
                 }
             })
 
             // If an error has come up during this workflow, rate limit the next iteration.
             .then(|res, _, _| match res {
-                Ok(ok) => fut::Either::A(fut::ok(ok)),
+                Ok(ok) => fut::Either::Left(fut::ok(ok)),
                 Err(err) => {
-                    let delay = Instant::now() + Duration::from_secs(1);
-                    fut::Either::B(fut::wrap_future(Delay::new(delay).map_err(|_| ()).then(move |res| match res {
-                        Ok(_) => Err(err),
-                        Err(_) => Err(err),
-                    })))
+                    fut::Either::Right(fut::wrap_future(delay_for(Duration::from_secs(1)).map(move |_| Err(err))))
                 }
             })
 
             // Drive state forward regardless of outcome.
-            .then(|res, act, ctx| {
+            .map(|_, act, ctx| {
                 act.is_driving_state = false;
                 act.drive_state(ctx);
-                fut::result(res)
             }));
     }
 }

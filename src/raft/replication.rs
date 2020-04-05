@@ -14,6 +14,7 @@ use crate::{
         RSRateUpdate, RSUpdateLineCommit, RSRevertToFollower, RSUpdateMatchIndex,
     },
     storage::{CreateSnapshot, GetCurrentSnapshot, CurrentSnapshotData, RaftStorage},
+    try_fut::TryActorFutureExt,
 };
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -79,7 +80,7 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
 // RSNeedsSnapshot ///////////////////////////////////////////////////////////////////////////////
 
 impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStorage<D, R, E>> Handler<RSNeedsSnapshot> for Raft<D, R, E, N, S> {
-    type Result = ResponseActFuture<Self, RSNeedsSnapshotResponse, ()>;
+    type Result = ResponseActFuture<Self, Result<RSNeedsSnapshotResponse, ()>>;
 
     /// Handle events from replication streams requesting for snapshot info.
     fn handle(&mut self, _: RSNeedsSnapshot, _ctx: &mut Self::Context) -> Self::Result {
@@ -108,12 +109,12 @@ impl<D: AppData, R: AppDataResponse, E: AppError, N: RaftNetwork<D>, S: RaftStor
                     // of the configured snapshot threshold, else create a new snapshot.
                     if snapshot_is_within_half_of_threshold(&meta, act.last_log_index, threshold) {
                         let CurrentSnapshotData{index, term, membership, pointer} = meta;
-                        return fut::Either::A(fut::ok(RSNeedsSnapshotResponse{index, term, membership, pointer}));
+                        return fut::Either::Left(fut::ok(RSNeedsSnapshotResponse{index, term, membership, pointer}));
                     }
                 }
                 // If snapshot is not within half of threshold, or if snapshot does not exist, create a new snapshot.
                 // Create a new snapshot up through the committed index (to avoid jitter).
-                fut::Either::B(fut::wrap_future(act.storage.send::<CreateSnapshot<E>>(CreateSnapshot::new(act.commit_index)))
+                fut::Either::Right(fut::wrap_future(act.storage.send::<CreateSnapshot<E>>(CreateSnapshot::new(act.commit_index)))
                     .map_err(|err, act: &mut Self, ctx| act.map_fatal_actix_messaging_error(ctx, err, DependencyAddr::RaftStorage))
                     .and_then(|res, act, ctx| act.map_fatal_storage_result(ctx, res))
                     .and_then(|res, _, _| {
