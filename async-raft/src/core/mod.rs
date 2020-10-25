@@ -786,22 +786,165 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+enum ReplicationEvent {
+    Terminate,
+    Commited {
+        last_log_index: u64,
+        commit_index: u64,
+        last_applied: u64,
+    },
+}
+
+enum ReplicationNotification {
+    ReportMetrics,
+    Applied(u64),
+    Error(RaftError),
+}
+
+struct ReplicationEventListener<D, R, S>
+where
+    D: AppData,
+    R: AppDataResponse,
+    S: RaftStorage<D, R>
+{
+    last_applied: u64,
+    last_log_index: u64,
+    commit_index: u64,
+    storage: Arc<S>,
+    event_rx: mpsc::UnboundedReceiver<ReplicationEvent>,
+    replication_tx: mpsc::UnboundedSender<ReplicationNotification>,
+    _phamtom: std::marker::PhantomData<(D, R)>,
+}
+
+impl<D, R, S> ReplicationEventListener<D, R, S>
+where
+    D: AppData,
+    R: AppDataResponse,
+    S: RaftStorage<D, R>
+{
+    /// returns (last_applied)
+    async fn main(mut self) -> u64 {
+        loop {
+            match self.event_rx.recv().await {
+                Some(ReplicationEvent::Commited { commit_index, last_log_index, last_applied }) => {
+                    if commit_index > self.commit_index {
+                        self.commit_index = commit_index;
+                    }
+                    if last_log_index  > self.last_log_index {
+                        self.last_log_index = last_log_index;
+                    }
+                    if last_applied > self.last_applied {
+                        self.last_applied = last_applied;
+                    }
+                    let mut report_metrics = false;
+                    match self.replicate_to_state_machine_if_needed(&mut report_metrics).await {
+                        Ok(()) => {
+                            if report_metrics {
+                                let _ = self.replication_tx.send(ReplicationNotification::ReportMetrics);
+                                let _ = self.replication_tx.send(ReplicationNotification::Applied(self.last_applied));
+                            }
+                        }
+                        Err(e) => {
+                            let _ = self.replication_tx.send(ReplicationNotification::Error(e));
+                            return self.last_applied;
+                        }
+                    }
+                }
+                None | Some(ReplicationEvent::Terminate) => return self.last_applied,
+            }
+        }
+    }
+    
+    /// Replicate outstanding logs to the state machine if needed.
+    #[tracing::instrument(level = "trace", skip(self, report_metrics))]
+    async fn replicate_to_state_machine_if_needed(&mut self, report_metrics: &mut bool) -> RaftResult<()> {
+        if self.commit_index > self.last_applied {
+            // Fetch the series of entries which must be applied to the state machine, and apply them.
+            let stop = std::cmp::min(self.commit_index, self.last_log_index) + 1;
+            let entries = self
+                .storage
+                .get_log_entries(self.last_applied + 1, stop)
+                .await
+                .map_err(|err| self.map_fatal_storage_error(err))?;
+            if let Some(entry) = entries.last() {
+                self.last_applied = entry.index;
+                *report_metrics = true;
+            }
+            let data_entries: Vec<_> = entries
+                .iter()
+                .filter_map(|entry| match &entry.payload {
+                    crate::raft::EntryPayload::Normal(inner) => Some((&entry.index, &inner.data)),
+                    _ => None,
+                })
+                .collect();
+            if data_entries.is_empty() {
+                return Ok(());
+            }
+            self.storage
+                .replicate_to_state_machine(&data_entries)
+                .await
+                .map_err(|err| self.map_fatal_storage_error(err))?;
+        }
+        Ok(())
+    }
+
+    fn map_fatal_storage_error(&self, err: anyhow::Error) -> RaftError {
+        tracing::error!({error=%err}, "fatal storage error, shutting down");
+        RaftError::RaftStorage(err)
+    }
+}
+
+struct ReplicationTask {
+    handle: JoinHandle<u64>,
+    event_tx: mpsc::UnboundedSender<ReplicationEvent>,
+    replication_rx: mpsc::UnboundedReceiver<ReplicationNotification>
+}
+
+impl ReplicationTask {
+    fn spawn<D, R, S>(storage: Arc<S>) -> Self
+    where
+        D: AppData,
+        R: AppDataResponse,
+        S: RaftStorage<D, R>
+    {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let (replication_tx, replication_rx) = mpsc::unbounded_channel();
+        let event_listener = ReplicationEventListener {
+            last_applied: 0,
+            last_log_index: 0,
+            commit_index: 0,
+            storage,
+            event_rx,
+            replication_tx,
+            _phamtom: std::marker::PhantomData,
+        };
+        let handle = tokio::spawn(event_listener.main());
+        Self { handle, event_tx, replication_rx }
+    }
+}
+
 /// Volatile state specific to a Raft node in follower state.
 pub struct FollowerState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
     core: &'a mut RaftCore<D, R, N, S>,
+    replication_task: ReplicationTask,
 }
 
 impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> FollowerState<'a, D, R, N, S> {
     pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
-        Self { core }
+        let replication_task = ReplicationTask::spawn(core.storage.clone());
+        Self { core, replication_task }
     }
 
     /// Run the follower loop.
     #[tracing::instrument(level="trace", skip(self), fields(id=self.core.id, raft_state="follower"))]
-    pub(self) async fn run(self) -> RaftResult<()> {
+    pub(self) async fn run(mut self) -> RaftResult<()> {
         self.core.report_metrics();
         loop {
             if !self.core.target_state.is_follower() || self.core.needs_shutdown.load(Ordering::SeqCst) {
+                let _ = self.replication_task.event_tx.send(ReplicationEvent::Terminate);
+                if let Ok(last_applied) = self.replication_task.handle.await {
+                    self.core.last_applied = last_applied;
+                }
                 return Ok(());
             }
 
@@ -812,6 +955,12 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                 Some(msg) = self.core.rx_api.next() => match msg {
                     RaftMsg::AppendEntries{rpc, tx} => {
                         let _ = tx.send(self.core.handle_append_entries_request(rpc).await);
+                        let msg = ReplicationEvent::Commited { 
+                            commit_index: self.core.commit_index,
+                            last_log_index: self.core.last_log_index,
+                            last_applied: self.core.last_applied,
+                        };
+                        let _ = self.replication_task.event_tx.send(msg);
                     }
                     RaftMsg::RequestVote{rpc, tx} => {
                         let _ = tx.send(self.core.handle_vote_request(rpc).await);
@@ -836,6 +985,19 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     }
                 },
                 Some(update) = self.core.rx_compaction.next() => self.core.update_snapshot_state(update),
+                Some(msg) = self.replication_task.replication_rx.next() => {
+                    match msg {
+                        ReplicationNotification::Applied(index) => {
+                            self.core.last_applied = index;
+                            self.core.trigger_log_compaction_if_needed();
+                        }
+                        ReplicationNotification::Error(e) => {
+                            tracing::error!("{}", e);
+                            self.core.needs_shutdown.store(true, Ordering::SeqCst);
+                        }
+                        ReplicationNotification::ReportMetrics => self.core.report_metrics(),
+                    }
+                }
             }
         }
     }

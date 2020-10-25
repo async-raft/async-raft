@@ -52,7 +52,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         if msg_prev_index_is_min || msg_index_and_term_match {
             // If this is just a heartbeat, then respond.
             if msg.entries.is_empty() {
-                self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
+                //self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
                 if report_metrics {
                     self.report_metrics();
                 }
@@ -65,7 +65,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
 
             // Else, append log entries.
             self.append_log_entries(&msg.entries).await?;
-            self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
+            //self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
             if report_metrics {
                 self.report_metrics();
             }
@@ -156,7 +156,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         tracing::trace!("end log consistency check");
 
         self.append_log_entries(&msg.entries).await?;
-        self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
+        //self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
         if report_metrics {
             self.report_metrics();
         }
@@ -198,39 +198,4 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         Ok(())
     }
 
-    /// Replicate outstanding logs to the state machine if needed.
-    #[tracing::instrument(level = "trace", skip(self, report_metrics))]
-    async fn replicate_to_state_machine_if_needed(&mut self, report_metrics: &mut bool) -> RaftResult<()> {
-        if self.commit_index > self.last_applied {
-            // Fetch the series of entries which must be applied to the state machine, and apply them.
-            let stop = std::cmp::min(self.commit_index, self.last_log_index) + 1;
-            let entries = self
-                .storage
-                .get_log_entries(self.last_applied + 1, stop)
-                .await
-                .map_err(|err| self.map_fatal_storage_error(err))?;
-            if let Some(entry) = entries.last() {
-                self.last_applied = entry.index;
-                *report_metrics = true;
-            }
-            let data_entries: Vec<_> = entries
-                .iter()
-                .filter_map(|entry| match &entry.payload {
-                    EntryPayload::Normal(inner) => Some((&entry.index, &inner.data)),
-                    _ => None,
-                })
-                .collect();
-            if data_entries.is_empty() {
-                return Ok(());
-            }
-            self.storage
-                .replicate_to_state_machine(&data_entries)
-                .await
-                .map_err(|err| self.map_fatal_storage_error(err))?;
-
-            // Request async compaction, if needed.
-            self.trigger_log_compaction_if_needed();
-        }
-        Ok(())
-    }
 }
