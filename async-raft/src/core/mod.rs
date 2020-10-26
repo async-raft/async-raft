@@ -840,8 +840,12 @@ where
                     match self.replicate_to_state_machine_if_needed(&mut report_metrics).await {
                         Ok(()) => {
                             if report_metrics {
-                                let _ = self.replication_tx.send(ReplicationNotification::ReportMetrics);
-                                let _ = self.replication_tx.send(ReplicationNotification::Applied(self.last_applied));
+                                if let Err(_) = self.replication_tx.send(ReplicationNotification::ReportMetrics) {
+                                    return self.last_applied;
+                                }
+                                if let Err(_) = self.replication_tx.send(ReplicationNotification::Applied(self.last_applied)) {
+                                    return self.last_applied;
+                                }
                             }
                         }
                         Err(e) => {
@@ -1009,11 +1013,13 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 /// Volatile state specific to a Raft node in non-voter state.
 pub struct NonVoterState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
     core: &'a mut RaftCore<D, R, N, S>,
+    replication_task: ReplicationTask,
 }
 
 impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> NonVoterState<'a, D, R, N, S> {
     pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
-        Self { core }
+        let replication_task = ReplicationTask::spawn(core.storage.clone());
+        Self { core, replication_task }
     }
 
     /// Run the non-voter loop.
@@ -1022,12 +1028,22 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         self.core.report_metrics();
         loop {
             if !self.core.target_state.is_non_voter() || self.core.needs_shutdown.load(Ordering::SeqCst) {
+                let _ = self.replication_task.event_tx.send(ReplicationEvent::Terminate);
+                if let Ok(last_applied) = self.replication_task.handle.await {
+                    self.core.last_applied = last_applied;
+                }
                 return Ok(());
             }
             tokio::select! {
                 Some(msg) = self.core.rx_api.next() => match msg {
                     RaftMsg::AppendEntries{rpc, tx} => {
                         let _ = tx.send(self.core.handle_append_entries_request(rpc).await);
+                        let msg = ReplicationEvent::Commited { 
+                            commit_index: self.core.commit_index,
+                            last_log_index: self.core.last_log_index,
+                            last_applied: self.core.last_applied,
+                        };
+                        let _ = self.replication_task.event_tx.send(msg);
                     }
                     RaftMsg::RequestVote{rpc, tx} => {
                         let _ = tx.send(self.core.handle_vote_request(rpc).await);
@@ -1052,6 +1068,19 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     }
                 },
                 Some(update) = self.core.rx_compaction.next() => self.core.update_snapshot_state(update),
+                Some(msg) = self.replication_task.replication_rx.next() => {
+                    match msg {
+                        ReplicationNotification::Applied(index) => {
+                            self.core.last_applied = index;
+                            self.core.trigger_log_compaction_if_needed();
+                        }
+                        ReplicationNotification::Error(e) => {
+                            tracing::error!("{}", e);
+                            self.core.needs_shutdown.store(true, Ordering::SeqCst);
+                        }
+                        ReplicationNotification::ReportMetrics => self.core.report_metrics(),
+                    }
+                }
             }
         }
     }

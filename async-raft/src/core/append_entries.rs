@@ -52,7 +52,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         if msg_prev_index_is_min || msg_index_and_term_match {
             // If this is just a heartbeat, then respond.
             if msg.entries.is_empty() {
-                //self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
                 if report_metrics {
                     self.report_metrics();
                 }
@@ -65,7 +64,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
 
             // Else, append log entries.
             self.append_log_entries(&msg.entries).await?;
-            //self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
             if report_metrics {
                 self.report_metrics();
             }
@@ -156,7 +154,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         tracing::trace!("end log consistency check");
 
         self.append_log_entries(&msg.entries).await?;
-        //self.replicate_to_state_machine_if_needed(&mut report_metrics).await?;
         if report_metrics {
             self.report_metrics();
         }
