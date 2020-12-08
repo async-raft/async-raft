@@ -13,7 +13,7 @@ use crate::config::{Config, SnapshotPolicy};
 use crate::error::RaftResult;
 use crate::raft::{AppendEntriesRequest, Entry, EntryPayload, InstallSnapshotRequest};
 use crate::storage::CurrentSnapshotData;
-use crate::{AppData, AppDataResponse, NodeId, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, NodeId, RaftNetwork, RaftStorage};
 
 /// The public handle to a spawned replication stream.
 pub(crate) struct ReplicationStream<D: AppData> {
@@ -25,7 +25,7 @@ pub(crate) struct ReplicationStream<D: AppData> {
 
 impl<D: AppData> ReplicationStream<D> {
     /// Create a new replication stream for the target peer.
-    pub(crate) fn new<R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>>(
+    pub(crate) fn new<E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>>(
         id: NodeId, target: NodeId, term: u64, config: Arc<Config>, last_log_index: u64, last_log_term: u64, commit_index: u64, network: Arc<N>,
         storage: Arc<S>, replicationtx: mpsc::UnboundedSender<ReplicaEvent<S::Snapshot>>,
     ) -> Self {
@@ -49,7 +49,7 @@ impl<D: AppData> ReplicationStream<D> {
 /// NOTE: we do not stack replication requests to targets because this could result in
 /// out-of-order delivery. We always buffer until we receive a success response, then send the
 /// next payload from the buffer.
-struct ReplicationCore<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
+struct ReplicationCore<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
     //////////////////////////////////////////////////////////////////////////
     // Static Fields /////////////////////////////////////////////////////////
     /// The ID of this Raft node.
@@ -128,7 +128,7 @@ struct ReplicationCore<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: Raf
     heartbeat_timeout: Duration,
 }
 
-impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> ReplicationCore<D, R, N, S> {
+impl<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> ReplicationCore<D, E, R, N, S> {
     /// Spawn a new replication task for the target node.
     pub(self) fn spawn(
         id: NodeId, target: NodeId, term: u64, config: Arc<Config>, last_log_index: u64, last_log_term: u64, commit_index: u64, network: Arc<N>,
@@ -495,14 +495,14 @@ where
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// LineRate specific state.
-struct LineRateState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
+struct LineRateState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
     /// An exclusive handle to the replication core.
-    core: &'a mut ReplicationCore<D, R, N, S>,
+    core: &'a mut ReplicationCore<D, E, R, N, S>,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LineRateState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> LineRateState<'a, D, E, R, N, S> {
     /// Create a new instance.
-    pub fn new(core: &'a mut ReplicationCore<D, R, N, S>) -> Self {
+    pub fn new(core: &'a mut ReplicationCore<D, E, R, N, S>) -> Self {
         Self { core }
     }
 
@@ -578,14 +578,14 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Lagging specific state.
-struct LaggingState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
+struct LaggingState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
     /// An exclusive handle to the replication core.
-    core: &'a mut ReplicationCore<D, R, N, S>,
+    core: &'a mut ReplicationCore<D, E, R, N, S>,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LaggingState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> LaggingState<'a, D, E, R, N, S> {
     /// Create a new instance.
-    pub fn new(core: &'a mut ReplicationCore<D, R, N, S>) -> Self {
+    pub fn new(core: &'a mut ReplicationCore<D, E, R, N, S>) -> Self {
         Self { core }
     }
 
@@ -676,16 +676,16 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Snapshotting specific state.
-struct SnapshottingState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
+struct SnapshottingState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
     /// An exclusive handle to the replication core.
-    core: &'a mut ReplicationCore<D, R, N, S>,
+    core: &'a mut ReplicationCore<D, E, R, N, S>,
     snapshot: Option<CurrentSnapshotData<S::Snapshot>>,
     snapshot_fetch_rx: Option<oneshot::Receiver<CurrentSnapshotData<S::Snapshot>>>,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> SnapshottingState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> SnapshottingState<'a, D, E, R, N, S> {
     /// Create a new instance.
-    pub fn new(core: &'a mut ReplicationCore<D, R, N, S>) -> Self {
+    pub fn new(core: &'a mut ReplicationCore<D, E, R, N, S>) -> Self {
         Self {
             core,
             snapshot: None,

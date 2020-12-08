@@ -12,22 +12,22 @@ use crate::error::{ClientReadError, ClientWriteError, RaftError, RaftResult};
 use crate::raft::AppendEntriesRequest;
 use crate::raft::{ClientReadResponseTx, ClientWriteRequest, ClientWriteResponse, ClientWriteResponseTx, Entry, EntryPayload};
 use crate::replication::RaftEvent;
-use crate::{AppData, AppDataResponse, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, RaftNetwork, RaftStorage};
 
 /// A wrapper around a ClientRequest which has been transformed into an Entry, along with its response channel.
-pub(super) struct ClientRequestEntry<D: AppData, R: AppDataResponse> {
+pub(super) struct ClientRequestEntry<D: AppData, E: AppError, R: AppDataResponse> {
     /// The Arc'd entry of the ClientRequest.
     ///
     /// This value is Arc'd so that it may be sent across thread boundaries for replication
     /// without having to clone the data payload itself.
     pub entry: Arc<Entry<D>>,
     /// The response channel for the request.
-    pub tx: ClientOrInternalResponseTx<D, R>,
+    pub tx: ClientOrInternalResponseTx<D, E, R>,
 }
 
-impl<D: AppData, R: AppDataResponse> ClientRequestEntry<D, R> {
+impl<D: AppData, E: AppError, R: AppDataResponse> ClientRequestEntry<D, E, R> {
     /// Create a new instance from the raw components of a client request.
-    pub(crate) fn from_entry<T: Into<ClientOrInternalResponseTx<D, R>>>(entry: Entry<D>, tx: T) -> Self {
+    pub(crate) fn from_entry<T: Into<ClientOrInternalResponseTx<D, E, R>>>(entry: Entry<D>, tx: T) -> Self {
         Self {
             entry: Arc::new(entry),
             tx: tx.into(),
@@ -37,12 +37,12 @@ impl<D: AppData, R: AppDataResponse> ClientRequestEntry<D, R> {
 
 /// An enum type wrapping either a client response channel or an internal Raft response channel.
 #[derive(derive_more::From)]
-pub enum ClientOrInternalResponseTx<D: AppData, R: AppDataResponse> {
-    Client(ClientWriteResponseTx<D, R>),
+pub enum ClientOrInternalResponseTx<D: AppData, E: AppError, R: AppDataResponse> {
+    Client(ClientWriteResponseTx<D, E, R>),
     Internal(oneshot::Sender<Result<u64, RaftError>>),
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LeaderState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> LeaderState<'a, D, E, R, N, S> {
     /// Commit the initial entry which new leaders are obligated to create when first coming to power, per §8.
     #[tracing::instrument(level = "trace", skip(self))]
     pub(super) async fn commit_initial_leader_entry(&mut self) -> RaftResult<()> {
@@ -213,7 +213,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
     /// Handle client write requests.
     #[tracing::instrument(level = "trace", skip(self, rpc, tx))]
-    pub(super) async fn handle_client_write_request(&mut self, rpc: ClientWriteRequest<D>, tx: ClientWriteResponseTx<D, R>) {
+    pub(super) async fn handle_client_write_request(&mut self, rpc: ClientWriteRequest<D>, tx: ClientWriteResponseTx<D, E, R>) {
         let entry = match self.append_payload_to_log(rpc.entry).await {
             Ok(entry) => ClientRequestEntry::from_entry(entry, tx),
             Err(err) => {
@@ -247,7 +247,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     /// merely beings the process. Once the request is committed to the cluster, its response will
     /// be generated asynchronously.
     #[tracing::instrument(level = "trace", skip(self, req))]
-    pub(super) async fn replicate_client_request(&mut self, req: ClientRequestEntry<D, R>) {
+    pub(super) async fn replicate_client_request(&mut self, req: ClientRequestEntry<D, E, R>) {
         // Replicate the request if there are other cluster members. The client response will be
         // returned elsewhere after the entry has been committed to the cluster.
         let entry_arc = req.entry.clone();
@@ -279,7 +279,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
     /// Handle the post-commit logic for a client request.
     #[tracing::instrument(level = "trace", skip(self, req))]
-    pub(super) async fn client_request_post_commit(&mut self, req: ClientRequestEntry<D, R>) {
+    pub(super) async fn client_request_post_commit(&mut self, req: ClientRequestEntry<D, E, R>) {
         match req.tx {
             // If this is a client response channel, then it means that we are dealing with
             ClientOrInternalResponseTx::Client(tx) => match &req.entry.payload {
@@ -290,9 +290,14 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                             data,
                         }));
                     }
-                    Err(err) => {
-                        let _ = tx.send(Err(ClientWriteError::RaftError(err)));
-                    }
+                    Err(err) => match err.downcast::<E>() {
+                        Ok(app_err) => {
+                            let _ = tx.send(Err(ClientWriteError::AppError(app_err)));
+                        }
+                        Err(orig) => {
+                            let _ = tx.send(Err(ClientWriteError::RaftError(RaftError::RaftStorage(orig))));
+                        }
+                    },
                 },
                 _ => {
                     // Why is this a bug, and why are we shutting down? This is because we can not easily
@@ -316,7 +321,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
     /// Apply the given log entry to the state machine.
     #[tracing::instrument(level = "trace", skip(self, entry))]
-    pub(super) async fn apply_entry_to_state_machine(&mut self, index: &u64, entry: &D) -> RaftResult<R> {
+    pub(super) async fn apply_entry_to_state_machine(&mut self, index: &u64, entry: &D) -> anyhow::Result<R> {
         // First, we just ensure that we apply any outstanding up to, but not including, the index
         // of the given entry. We need to be able to return the data response from applying this
         // entry to the state machine.
@@ -363,9 +368,15 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             .storage
             .apply_entry_to_state_machine(index, entry)
             .await
-            .map_err(|err| self.core.map_fatal_storage_error(err))?;
+            .map_err(|err| match err.downcast::<E>() {
+                // If the error returned is an `AppError` instance, then we just propagate the error
+                // so that the caller may handle the error in an application specific way. No shutdown.
+                Ok(app_err) => app_err.into(),
+                // For any other error type, we issue a shutdown & propagate.
+                Err(orig) => anyhow::Error::from(self.core.map_fatal_storage_error(orig)),
+            });
         self.core.last_applied = *index;
         self.core.report_metrics();
-        Ok(res)
+        Ok(res?)
     }
 }

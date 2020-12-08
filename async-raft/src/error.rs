@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::{AppData, NodeId};
+use crate::{AppData, AppError, NodeId};
 
 /// A result type where the error variant is always a `RaftError`.
 pub type RaftResult<T> = std::result::Result<T, RaftError>;
@@ -41,7 +41,10 @@ pub enum ClientReadError {
 
 /// An error related to a client write request.
 #[derive(Debug, Error)]
-pub enum ClientWriteError<D: AppData> {
+pub enum ClientWriteError<D: AppData, E: AppError> {
+    /// An application specific error.
+    #[error("{0}")]
+    AppError(E),
     /// A Raft error.
     #[error("{0}")]
     RaftError(#[from] RaftError),
@@ -77,7 +80,10 @@ pub enum InitializeError {
 /// The set of errors which may take place when requesting to propose a config change.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum ChangeConfigError {
+pub enum ChangeConfigError<E: AppError> {
+    /// An application specific error.
+    #[error("{0}")]
+    AppError(E),
     /// An error related to the processing of the config change request.
     ///
     /// Errors of this type will only come about from the internals of applying the config change
@@ -104,9 +110,10 @@ pub enum ChangeConfigError {
     Noop,
 }
 
-impl<D: AppData> From<ClientWriteError<D>> for ChangeConfigError {
-    fn from(src: ClientWriteError<D>) -> Self {
+impl<D: AppData, E: AppError> From<ClientWriteError<D, E>> for ChangeConfigError<E> {
+    fn from(src: ClientWriteError<D, E>) -> Self {
         match src {
+            ClientWriteError::AppError(err) => Self::AppError(err),
             ClientWriteError::RaftError(err) => Self::RaftError(err),
             ClientWriteError::ForwardToLeader(_, id) => Self::NodeNotLeader(id),
         }

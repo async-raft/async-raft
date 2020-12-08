@@ -11,8 +11,9 @@ use anyhow::Result;
 use async_raft::async_trait::async_trait;
 use async_raft::raft::{Entry, EntryPayload, MembershipConfig};
 use async_raft::storage::{CurrentSnapshotData, HardState, InitialState};
-use async_raft::{AppData, AppDataResponse, NodeId, RaftStorage};
+use async_raft::{AppData, AppDataResponse, AppError, NodeId, RaftStorage};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::sync::{RwLockReadGuard, RwLockWriteGuard};
 
@@ -38,17 +39,20 @@ impl AppData for ClientRequest {}
 
 /// The application data response type which the `MemStore` works with.
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ClientResponse(std::result::Result<Option<String>, ClientError>);
+pub struct ClientResponse(Option<String>);
 
 impl AppDataResponse for ClientResponse {}
 
 /// Error data response.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Clone, Debug, Error)]
 pub enum ClientError {
     /// This request has already been applied to the state machine, and the original response
     /// no longer exists.
+    #[error("old request replayed")]
     OldRequestReplayed,
 }
+
+impl AppError for ClientError {}
 
 /// The application snapshot type which the `MemStore` works with.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -139,7 +143,7 @@ impl MemStore {
 }
 
 #[async_trait]
-impl RaftStorage<ClientRequest, ClientResponse> for MemStore {
+impl RaftStorage<ClientRequest, ClientError, ClientResponse> for MemStore {
     type Snapshot = Cursor<Vec<u8>>;
 
     #[tracing::instrument(level = "trace", skip(self))]
@@ -242,14 +246,14 @@ impl RaftStorage<ClientRequest, ClientResponse> for MemStore {
     async fn apply_entry_to_state_machine(&self, index: &u64, data: &ClientRequest) -> Result<ClientResponse> {
         let mut sm = self.sm.write().await;
         sm.last_applied_log = *index;
-        if let Some((serial, res)) = sm.client_serial_responses.get(&data.client) {
-            if serial == &data.serial {
-                return Ok(ClientResponse(Ok(res.clone())));
-            }
+        match sm.client_serial_responses.get(&data.client) {
+            Some((serial, res)) if &data.serial == serial => return Ok(ClientResponse(res.clone())),
+            Some((serial, _)) if &data.serial < serial => return Err(ClientError::OldRequestReplayed.into()),
+            _ => (),
         }
         let previous = sm.client_status.insert(data.client.clone(), data.status.clone());
         sm.client_serial_responses.insert(data.client.clone(), (data.serial, previous.clone()));
-        Ok(ClientResponse(Ok(previous)))
+        Ok(ClientResponse(previous))
     }
 
     #[tracing::instrument(level = "trace", skip(self, entries))]
@@ -258,7 +262,7 @@ impl RaftStorage<ClientRequest, ClientResponse> for MemStore {
         for (index, data) in entries {
             sm.last_applied_log = **index;
             if let Some((serial, _)) = sm.client_serial_responses.get(&data.client) {
-                if serial == &data.serial {
+                if serial == &data.serial || &data.serial < serial {
                     continue;
                 }
             }

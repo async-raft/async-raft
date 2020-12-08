@@ -5,9 +5,9 @@ use crate::core::{ConsensusState, LeaderState, ReplicationState, SnapshotState, 
 use crate::error::RaftResult;
 use crate::replication::{RaftEvent, ReplicaEvent, ReplicationStream};
 use crate::storage::CurrentSnapshotData;
-use crate::{AppData, AppDataResponse, NodeId, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, NodeId, RaftNetwork, RaftStorage};
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LeaderState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> LeaderState<'a, D, E, R, N, S> {
     /// Spawn a new replication stream returning its replication state handle.
     #[tracing::instrument(level = "trace", skip(self))]
     pub(super) fn spawn_replication_stream(&self, target: NodeId) -> ReplicationState<D> {

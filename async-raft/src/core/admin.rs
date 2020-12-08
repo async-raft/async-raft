@@ -8,9 +8,9 @@ use crate::core::{ConsensusState, LeaderState, NonVoterReplicationState, NonVote
 use crate::error::{ChangeConfigError, InitializeError, RaftError};
 use crate::raft::{ChangeMembershipTx, ClientWriteRequest, MembershipConfig};
 use crate::replication::RaftEvent;
-use crate::{AppData, AppDataResponse, NodeId, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, NodeId, RaftNetwork, RaftStorage};
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> NonVoterState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> NonVoterState<'a, D, E, R, N, S> {
     /// Handle the admin `init_with_config` command.
     #[tracing::instrument(level = "trace", skip(self))]
     pub(super) async fn handle_init_with_config(&mut self, mut members: HashSet<NodeId>) -> Result<(), InitializeError> {
@@ -47,11 +47,11 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     }
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LeaderState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> LeaderState<'a, D, E, R, N, S> {
     /// Add a new node to the cluster as a non-voter, bringing it up-to-speed, and then responding
     /// on the given channel.
     #[tracing::instrument(level = "trace", skip(self, tx))]
-    pub(super) fn add_member(&mut self, target: NodeId, tx: oneshot::Sender<Result<(), ChangeConfigError>>) {
+    pub(super) fn add_member(&mut self, target: NodeId, tx: oneshot::Sender<Result<(), ChangeConfigError<E>>>) {
         // Ensure the node doesn't already exist in the current config, in the set of new nodes
         // alreading being synced, or in the nodes being removed.
         if self.core.membership.members.contains(&target)
@@ -83,7 +83,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     }
 
     #[tracing::instrument(level = "trace", skip(self, tx))]
-    pub(super) async fn change_membership(&mut self, members: HashSet<NodeId>, tx: ChangeMembershipTx) {
+    pub(super) async fn change_membership(&mut self, members: HashSet<NodeId>, tx: ChangeMembershipTx<E>) {
         // Ensure cluster will have at least one node.
         if members.is_empty() {
             let _ = tx.send(Err(ChangeConfigError::InoperableConfig));

@@ -1,9 +1,9 @@
 use crate::core::{RaftCore, State, UpdateCurrentLeader};
 use crate::error::RaftResult;
 use crate::raft::{AppendEntriesRequest, AppendEntriesResponse, ConflictOpt, Entry, EntryPayload};
-use crate::{AppData, AppDataResponse, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, RaftNetwork, RaftStorage};
 
-impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> RaftCore<D, R, N, S> {
+impl<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> RaftCore<D, E, R, N, S> {
     /// An RPC invoked by the leader to replicate log entries (§5.3); also used as heartbeat (§5.2).
     ///
     /// See `receiver implementation: AppendEntries RPC` in raft-essentials.md in this repo.

@@ -15,12 +15,14 @@ use async_raft::raft::{InstallSnapshotRequest, InstallSnapshotResponse};
 use async_raft::raft::{VoteRequest, VoteResponse};
 use async_raft::storage::RaftStorage;
 use async_raft::{Config, NodeId, Raft, RaftMetrics, RaftNetwork, State};
-use memstore::{ClientRequest as MemClientRequest, ClientResponse as MemClientResponse, MemStore};
+use memstore::{ClientError as MemClientError, ClientRequest as MemClientRequest, ClientResponse as MemClientResponse, MemStore};
 use tokio::sync::RwLock;
 use tracing_subscriber::prelude::*;
 
 /// A concrete Raft type used during testing.
-pub type MemRaft = Raft<MemClientRequest, MemClientResponse, RaftRouter, MemStore>;
+pub type MemRaft = Raft<MemClientRequest, MemClientError, MemClientResponse, RaftRouter, MemStore>;
+pub type MemChangeConfigError = ChangeConfigError<MemClientError>;
+pub type MemClientWriteError = ClientWriteError<MemClientRequest, MemClientError>;
 
 /// Initialize the tracing system.
 pub fn init_tracing() {
@@ -126,13 +128,13 @@ impl RaftRouter {
         nodes.remove(&id);
     }
 
-    pub async fn add_non_voter(&self, leader: NodeId, target: NodeId) -> Result<(), ChangeConfigError> {
+    pub async fn add_non_voter(&self, leader: NodeId, target: NodeId) -> Result<(), MemChangeConfigError> {
         let rt = self.routing_table.read().await;
         let node = rt.get(&leader).unwrap_or_else(|| panic!("node with ID {} does not exist", leader));
         node.0.add_non_voter(target).await
     }
 
-    pub async fn change_membership(&self, leader: NodeId, members: HashSet<NodeId>) -> Result<(), ChangeConfigError> {
+    pub async fn change_membership(&self, leader: NodeId, members: HashSet<NodeId>) -> Result<(), MemChangeConfigError> {
         let rt = self.routing_table.read().await;
         let node = rt.get(&leader).unwrap_or_else(|| panic!("node with ID {} does not exist", leader));
         node.0.change_membership(members).await
@@ -146,7 +148,7 @@ impl RaftRouter {
     }
 
     /// Send a client request to the target node, causing test failure on error.
-    pub async fn client_request(&self, target: NodeId, client_id: &str, serial: u64) {
+    pub async fn client_request_or_panic(&self, target: NodeId, client_id: &str, serial: u64) {
         let req = MemClientRequest {
             client: client_id.into(),
             serial,
@@ -158,16 +160,24 @@ impl RaftRouter {
         }
     }
 
+    /// Send a client request to the target node.
+    pub async fn client_request(&self, target: NodeId, client_id: &str, serial: u64) -> std::result::Result<MemClientResponse, MemClientWriteError> {
+        let req = MemClientRequest {
+            client: client_id.into(),
+            serial,
+            status: format!("request-{}", serial),
+        };
+        Ok(self.send_client_request(target, req).await?)
+    }
+
     /// Send multiple client requests to the target node, causing test failure on error.
     pub async fn client_request_many(&self, target: NodeId, client_id: &str, count: usize) {
         for idx in 0..count {
-            self.client_request(target, client_id, idx as u64).await
+            self.client_request_or_panic(target, client_id, idx as u64).await
         }
     }
 
-    async fn send_client_request(
-        &self, target: NodeId, req: MemClientRequest,
-    ) -> std::result::Result<MemClientResponse, ClientWriteError<MemClientRequest>> {
+    async fn send_client_request(&self, target: NodeId, req: MemClientRequest) -> std::result::Result<MemClientResponse, MemClientWriteError> {
         let rt = self.routing_table.read().await;
         let node = rt
             .get(&target)

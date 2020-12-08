@@ -3,11 +3,13 @@ mod fixtures;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
+use async_raft::error::ClientWriteError;
 use async_raft::raft::MembershipConfig;
 use async_raft::Config;
 use futures::prelude::*;
 use maplit::hashset;
+use memstore::ClientError;
 use tokio::time::delay_for;
 
 use fixtures::RaftRouter;
@@ -70,6 +72,22 @@ async fn client_writes() -> Result<()> {
             )),
         )
         .await;
+
+    // Write a repeated request with the same serial number, and assert the application error
+    // is handled without causing shutdown. This will trigger an application error as it is an
+    // old serial number which will no longer have a cached response.
+    let err = match router.client_request(leader, "5", 998).await {
+        Err(err) => err,
+        Ok(_) => bail!("ok response returned from repeated old request, expected an application error"),
+    };
+    match err {
+        ClientWriteError::AppError(ClientError::OldRequestReplayed) => {
+            tracing::info!("old request replayed, success");
+        }
+        other => bail!("unexpected error variant returned, expected an AppError, got {:?}", other),
+    }
+    delay_for(Duration::from_secs(5)).await;
+    router.assert_stable_cluster(Some(1), Some(6002)).await; // This will still append a new entry to the log &c.
 
     Ok(())
 }

@@ -28,10 +28,10 @@ use crate::raft::{
 };
 use crate::replication::{RaftEvent, ReplicaEvent, ReplicationStream};
 use crate::storage::HardState;
-use crate::{AppData, AppDataResponse, NodeId, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, NodeId, RaftNetwork, RaftStorage};
 
 /// The core type implementing the Raft protocol.
-pub struct RaftCore<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
+pub struct RaftCore<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
     /// This node's ID.
     id: NodeId,
     /// This node's runtime config.
@@ -114,14 +114,14 @@ pub struct RaftCore<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftSt
     tx_compaction: mpsc::Sender<SnapshotUpdate>,
     rx_compaction: mpsc::Receiver<SnapshotUpdate>,
 
-    rx_api: mpsc::UnboundedReceiver<RaftMsg<D, R>>,
+    rx_api: mpsc::UnboundedReceiver<RaftMsg<D, E, R>>,
     tx_metrics: watch::Sender<RaftMetrics>,
     rx_shutdown: oneshot::Receiver<()>,
 }
 
-impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> RaftCore<D, R, N, S> {
+impl<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> RaftCore<D, E, R, N, S> {
     pub(crate) fn spawn(
-        id: NodeId, config: Arc<Config>, network: Arc<N>, storage: Arc<S>, rx_api: mpsc::UnboundedReceiver<RaftMsg<D, R>>,
+        id: NodeId, config: Arc<Config>, network: Arc<N>, storage: Arc<S>, rx_api: mpsc::UnboundedReceiver<RaftMsg<D, E, R>>,
         tx_metrics: watch::Sender<RaftMetrics>, rx_shutdown: oneshot::Receiver<()>,
     ) -> JoinHandle<RaftResult<()>> {
         let membership = MembershipConfig::new_initial(id); // This is updated from storage in the main loop.
@@ -410,13 +410,13 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
 
     /// Reject a proposed config change request due to the Raft node being in a state which prohibits the request.
     #[tracing::instrument(level = "trace", skip(self, tx))]
-    fn reject_config_change_not_leader(&self, tx: oneshot::Sender<Result<(), ChangeConfigError>>) {
+    fn reject_config_change_not_leader(&self, tx: oneshot::Sender<Result<(), ChangeConfigError<E>>>) {
         let _ = tx.send(Err(ChangeConfigError::NodeNotLeader(self.current_leader)));
     }
 
     /// Forward the given client write request to the leader.
     #[tracing::instrument(level = "trace", skip(self, req, tx))]
-    fn forward_client_write_request(&self, req: ClientWriteRequest<D>, tx: ClientWriteResponseTx<D, R>) {
+    fn forward_client_write_request(&self, req: ClientWriteRequest<D>, tx: ClientWriteResponseTx<D, E, R>) {
         match req.entry {
             EntryPayload::Normal(entry) => {
                 let _ = tx.send(Err(ClientWriteError::ForwardToLeader(entry.data, self.current_leader)));
@@ -533,12 +533,12 @@ impl State {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Volatile state specific to the Raft leader.
-struct LeaderState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
-    pub(super) core: &'a mut RaftCore<D, R, N, S>,
+struct LeaderState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
+    pub(super) core: &'a mut RaftCore<D, E, R, N, S>,
     /// A mapping of node IDs the replication state of the target node.
     pub(super) nodes: BTreeMap<NodeId, ReplicationState<D>>,
     /// A mapping of new nodes (non-voters) which are being synced in order to join the cluster.
-    pub(super) non_voters: BTreeMap<NodeId, NonVoterReplicationState<D>>,
+    pub(super) non_voters: BTreeMap<NodeId, NonVoterReplicationState<D, E>>,
     /// A bool indicating if this node will be stepping down after committing the current config change.
     pub(super) is_stepping_down: bool,
 
@@ -547,9 +547,9 @@ struct LeaderState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: Raf
     /// The clonable sender channel for replication stream events.
     pub(super) replicationtx: mpsc::UnboundedSender<ReplicaEvent<S::Snapshot>>,
     /// A buffer of client requests which have been appended locally and are awaiting to be committed to the cluster.
-    pub(super) awaiting_committed: Vec<ClientRequestEntry<D, R>>,
+    pub(super) awaiting_committed: Vec<ClientRequestEntry<D, E, R>>,
     /// A field tracking the cluster's current consensus state, which is used for dynamic membership.
-    pub(super) consensus_state: ConsensusState,
+    pub(super) consensus_state: ConsensusState<E>,
 
     /// An optional response channel for when a config change has been proposed, and is awaiting a response.
     pub(super) propose_config_change_cb: Option<oneshot::Sender<Result<(), RaftError>>>,
@@ -559,9 +559,9 @@ struct LeaderState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: Raf
     pub(super) uniform_consensus_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LeaderState<'a, D, R, N, S> {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> LeaderState<'a, D, E, R, N, S> {
     /// Create a new instance.
-    pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
+    pub(self) fn new(core: &'a mut RaftCore<D, E, R, N, S>) -> Self {
         let consensus_state = if core.membership.is_in_joint_consensus() {
             ConsensusState::Joint { is_committed: false }
         } else {
@@ -688,17 +688,17 @@ struct ReplicationState<D: AppData> {
 }
 
 /// The same as `ReplicationState`, except for non-voters.
-struct NonVoterReplicationState<D: AppData> {
+struct NonVoterReplicationState<D: AppData, E: AppError> {
     /// The replication stream state.
     pub state: ReplicationState<D>,
     /// A bool indicating if this non-voters is ready to join the cluster.
     pub is_ready_to_join: bool,
     /// The response channel to use for when this node has successfully synced with the cluster.
-    pub tx: Option<oneshot::Sender<Result<(), ChangeConfigError>>>,
+    pub tx: Option<oneshot::Sender<Result<(), ChangeConfigError<E>>>>,
 }
 
 /// A state enum used by Raft leaders to navigate the joint consensus protocol.
-pub enum ConsensusState {
+pub enum ConsensusState<E: AppError> {
     /// The cluster is preparring to go into joint consensus, but the leader is still syncing
     /// some non-voters to prepare them for cluster membership.
     NonVoterSync {
@@ -707,7 +707,7 @@ pub enum ConsensusState {
         /// The full membership change which has been proposed.
         members: HashSet<NodeId>,
         /// The response channel to use once the consensus state is back into uniform state.
-        tx: ChangeMembershipTx,
+        tx: ChangeMembershipTx<E>,
     },
     /// The cluster is in a joint consensus state and is syncing new nodes.
     Joint {
@@ -721,7 +721,7 @@ pub enum ConsensusState {
     Uniform,
 }
 
-impl ConsensusState {
+impl<E: AppError> ConsensusState<E> {
     /// Check the current state to determine if it is in joint consensus, and if it is safe to finalize the joint consensus.
     ///
     /// The return value will be true if:
@@ -729,7 +729,7 @@ impl ConsensusState {
     /// 2. the corresponding config for this consensus state has been committed to the cluster.
     pub fn is_joint_consensus_safe_to_finalize(&self) -> bool {
         match self {
-            ConsensusState::Joint { is_committed } => *is_committed,
+            Self::Joint { is_committed } => *is_committed,
             _ => false,
         }
     }
@@ -739,8 +739,8 @@ impl ConsensusState {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Volatile state specific to a Raft node in candidate state.
-struct CandidateState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
-    core: &'a mut RaftCore<D, R, N, S>,
+struct CandidateState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
+    core: &'a mut RaftCore<D, E, R, N, S>,
     /// The number of votes which have been granted by peer nodes of the old (current) config group.
     votes_granted_old: u64,
     /// The number of votes needed from the old (current) config group in order to become the Raft leader.
@@ -751,8 +751,8 @@ struct CandidateState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: 
     votes_needed_new: u64,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> CandidateState<'a, D, R, N, S> {
-    pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> CandidateState<'a, D, E, R, N, S> {
+    pub(self) fn new(core: &'a mut RaftCore<D, E, R, N, S>) -> Self {
         Self {
             core,
             votes_granted_old: 0,
@@ -838,12 +838,12 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Volatile state specific to a Raft node in follower state.
-pub struct FollowerState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
-    core: &'a mut RaftCore<D, R, N, S>,
+pub struct FollowerState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
+    core: &'a mut RaftCore<D, E, R, N, S>,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> FollowerState<'a, D, R, N, S> {
-    pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> FollowerState<'a, D, E, R, N, S> {
+    pub(self) fn new(core: &'a mut RaftCore<D, E, R, N, S>) -> Self {
         Self { core }
     }
 
@@ -901,12 +901,12 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Volatile state specific to a Raft node in non-voter state.
-pub struct NonVoterState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
-    core: &'a mut RaftCore<D, R, N, S>,
+pub struct NonVoterState<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
+    core: &'a mut RaftCore<D, E, R, N, S>,
 }
 
-impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> NonVoterState<'a, D, R, N, S> {
-    pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
+impl<'a, D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> NonVoterState<'a, D, E, R, N, S> {
+    pub(self) fn new(core: &'a mut RaftCore<D, E, R, N, S>) -> Self {
         Self { core }
     }
 

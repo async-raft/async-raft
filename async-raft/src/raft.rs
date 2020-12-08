@@ -11,10 +11,10 @@ use crate::config::Config;
 use crate::core::RaftCore;
 use crate::error::{ChangeConfigError, ClientReadError, ClientWriteError, InitializeError, RaftError, RaftResult};
 use crate::metrics::RaftMetrics;
-use crate::{AppData, AppDataResponse, NodeId, RaftNetwork, RaftStorage};
+use crate::{AppData, AppDataResponse, AppError, NodeId, RaftNetwork, RaftStorage};
 
-struct RaftInner<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
-    tx_api: mpsc::UnboundedSender<RaftMsg<D, R>>,
+struct RaftInner<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
+    tx_api: mpsc::UnboundedSender<RaftMsg<D, E, R>>,
     rx_metrics: watch::Receiver<RaftMetrics>,
     raft_handle: Mutex<Option<JoinHandle<RaftResult<()>>>>,
     tx_shutdown: Mutex<Option<oneshot::Sender<()>>>,
@@ -43,11 +43,11 @@ struct RaftInner<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStora
 /// is shutting down (potentially for data safety reasons due to a storage error), and the `shutdown`
 /// method should be called on this type to await the shutdown of the node. If the parent
 /// application needs to shutdown the Raft node for any reason, calling `shutdown` will do the trick.
-pub struct Raft<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
-    inner: Arc<RaftInner<D, R, N, S>>,
+pub struct Raft<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> {
+    inner: Arc<RaftInner<D, E, R, N, S>>,
 }
 
-impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Raft<D, R, N, S> {
+impl<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> Raft<D, E, R, N, S> {
     /// Create and spawn a new Raft task.
     ///
     /// ### `id`
@@ -158,7 +158,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
     /// These are application specific requirements, and must be implemented by the application which is
     /// being built on top of Raft.
     #[tracing::instrument(level = "debug", skip(self, rpc))]
-    pub async fn client_write(&self, rpc: ClientWriteRequest<D>) -> Result<ClientWriteResponse<R>, ClientWriteError<D>> {
+    pub async fn client_write(&self, rpc: ClientWriteRequest<D>) -> Result<ClientWriteResponse<R>, ClientWriteError<D, E>> {
         let (tx, rx) = oneshot::channel();
         self.inner
             .tx_api
@@ -224,7 +224,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
     ///
     /// If this Raft node is not the cluster leader, then this call will fail.
     #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn add_non_voter(&self, id: NodeId) -> Result<(), ChangeConfigError> {
+    pub async fn add_non_voter(&self, id: NodeId) -> Result<(), ChangeConfigError<E>> {
         let (tx, rx) = oneshot::channel();
         self.inner
             .tx_api
@@ -248,7 +248,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
     /// If this Raft node is not the cluster leader, then the proposed configuration change will be
     /// rejected.
     #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn change_membership(&self, members: HashSet<NodeId>) -> Result<(), ChangeConfigError> {
+    pub async fn change_membership(&self, members: HashSet<NodeId>) -> Result<(), ChangeConfigError<E>> {
         let (tx, rx) = oneshot::channel();
         self.inner
             .tx_api
@@ -277,18 +277,18 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
     }
 }
 
-impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Clone for Raft<D, R, N, S> {
+impl<D: AppData, E: AppError, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, E, R>> Clone for Raft<D, E, R, N, S> {
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }
 }
 
-pub(crate) type ClientWriteResponseTx<D, R> = oneshot::Sender<Result<ClientWriteResponse<R>, ClientWriteError<D>>>;
+pub(crate) type ClientWriteResponseTx<D, E, R> = oneshot::Sender<Result<ClientWriteResponse<R>, ClientWriteError<D, E>>>;
 pub(crate) type ClientReadResponseTx = oneshot::Sender<Result<(), ClientReadError>>;
-pub(crate) type ChangeMembershipTx = oneshot::Sender<Result<(), ChangeConfigError>>;
+pub(crate) type ChangeMembershipTx<E> = oneshot::Sender<Result<(), ChangeConfigError<E>>>;
 
 /// A message coming from the Raft API.
-pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
+pub(crate) enum RaftMsg<D: AppData, E: AppError, R: AppDataResponse> {
     AppendEntries {
         rpc: AppendEntriesRequest<D>,
         tx: oneshot::Sender<Result<AppendEntriesResponse, RaftError>>,
@@ -303,7 +303,7 @@ pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
     },
     ClientWriteRequest {
         rpc: ClientWriteRequest<D>,
-        tx: ClientWriteResponseTx<D, R>,
+        tx: ClientWriteResponseTx<D, E, R>,
     },
     ClientReadRequest {
         tx: ClientReadResponseTx,
@@ -314,11 +314,11 @@ pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
     },
     AddNonVoter {
         id: NodeId,
-        tx: ChangeMembershipTx,
+        tx: ChangeMembershipTx<E>,
     },
     ChangeMembership {
         members: HashSet<NodeId>,
-        tx: ChangeMembershipTx,
+        tx: ChangeMembershipTx<E>,
     },
 }
 

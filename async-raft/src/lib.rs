@@ -10,6 +10,7 @@ pub mod raft;
 mod replication;
 pub mod storage;
 
+use std::error::Error;
 use std::fmt::Debug;
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -47,8 +48,20 @@ pub trait AppData: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 
 /// their storage layer, up through Raft, and back into their application for returning
 /// data to clients.
 ///
-/// This type must encapsulate both success and error responses, as application specific logic
-/// related to the success or failure of a client request — application specific validation logic,
-/// enforcing of data constraints, and anything of that nature — are expressly out of the realm of
-/// the Raft consensus protocol.
+/// This type is specifically intended to represent the successful application of a client request
+/// to the storage engine. For errors, use the `AppError` type.
 pub trait AppDataResponse: Clone + Debug + Send + Sync + Serialize + DeserializeOwned + 'static {}
+
+/// A trait defining an application specific error type.
+///
+/// The intention of this trait is that applications which are using this crate will be able to
+/// use their own concrete error types for returned error variants from the storage layer. Under
+/// normal circumstances, if Raft detects that an error has been returned from the storage layer,
+/// it will go into Shutdown. In a few specific cases, namely in `apply_entry_to_state_machine`,
+/// applications are allowed to return an instance of this type as an error, and in such cases the
+/// error will be propagated without causing shutdown.
+///
+/// This allows for an ergonomic error control flow in `RaftStorage` implementations, but also
+/// gives this crate a mechanism for being able to differentiate between fatal vs application
+/// errors in the storage system.
+pub trait AppError: Clone + Debug + Error + Send + Sync + 'static {}
