@@ -119,7 +119,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
                     .get_membership_config()
                     .await
                     .map_err(|err| self.map_fatal_storage_error(err))?;
-                self.update_membership(membership)?;
+                self.update_membership(membership);
             }
         }
         // The target entry does not have the same term. Fetch the last 50 logs, and use the last
@@ -183,7 +183,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .last();
         if let Some(conf) = last_conf_change {
             tracing::debug!({membership=?conf}, "applying new membership config received from leader");
-            self.update_membership(conf.membership.clone())?;
+            self.update_membership(conf.membership.clone());
         };
 
         // Replicate entries to log (same as append, but in follower mode).

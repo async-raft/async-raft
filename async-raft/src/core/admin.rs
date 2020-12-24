@@ -83,6 +83,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     }
 
     #[tracing::instrument(level = "trace", skip(self, tx))]
+    #[allow(clippy::needless_collect)] // https://github.com/rust-lang/rust-clippy/issues/6066
     pub(super) async fn change_membership(&mut self, members: HashSet<NodeId>, tx: ChangeMembershipTx) {
         // Ensure cluster will have at least one node.
         if members.is_empty() {
@@ -105,7 +106,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         //
         // Here, all we do is check to see which nodes still need to be synced, which determines
         // we can proceed.
-        let diff = members.difference(&self.core.membership.members).cloned().collect::<Vec<_>>();
+        let diff = members.difference(&self.core.membership.members).copied().collect::<Vec<_>>();
         let awaiting = diff
             .into_iter()
             .filter(|new_node| match self.non_voters.get(&new_node) {

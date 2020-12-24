@@ -311,7 +311,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
 
     /// Update the node's current membership config & save hard state.
     #[tracing::instrument(level = "trace", skip(self))]
-    fn update_membership(&mut self, cfg: MembershipConfig) -> RaftResult<()> {
+    fn update_membership(&mut self, cfg: MembershipConfig) {
         // If the given config does not contain this node's ID, it means one of the following:
         //
         // - the node is currently a non-voter and is replicating an old config to which it has
@@ -327,7 +327,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             // Transition to follower.
             self.set_target_state(State::Follower);
         }
-        Ok(())
     }
 
     /// Update the system's snapshot state based on the given data.
@@ -494,38 +493,22 @@ pub enum State {
 impl State {
     /// Check if currently in non-voter state.
     pub fn is_non_voter(&self) -> bool {
-        if let Self::NonVoter = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::NonVoter)
     }
 
     /// Check if currently in follower state.
     pub fn is_follower(&self) -> bool {
-        if let Self::Follower = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Follower)
     }
 
     /// Check if currently in candidate state.
     pub fn is_candidate(&self) -> bool {
-        if let Self::Candidate = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Candidate)
     }
 
     /// Check if currently in leader state.
     pub fn is_leader(&self) -> bool {
-        if let Self::Leader = self {
-            true
-        } else {
-            false
-        }
+        matches!(self, Self::Leader)
     }
 }
 
