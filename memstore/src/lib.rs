@@ -199,7 +199,9 @@ impl RaftStorage<ClientRequest, ClientResponse> for MemStore {
             return Ok(vec![]);
         }
         let log = self.log.read().await;
-        Ok(log.range(start..stop).map(|(_, val)| val.clone()).collect())
+        (start..stop)
+            .map(|i| log.get(&i).cloned().ok_or_else(|| anyhow::anyhow!("log not found")))
+            .collect()
     }
 
     #[tracing::instrument(level = "trace", skip(self))]
