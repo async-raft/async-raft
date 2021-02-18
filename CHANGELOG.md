@@ -3,8 +3,6 @@ changelog
 This changelog follows the patterns described here: https://keepachangelog.com/en/1.0.0/.
 
 ## [unreleased]
-
-## async-raft 0.6.1
 ### fixed
 - Fixed [#105](https://github.com/async-raft/async-raft/issues/105) where function `set_target_state` missing `else` condition.
 
