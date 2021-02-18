@@ -4,7 +4,7 @@ This changelog follows the patterns described here: https://keepachangelog.com/e
 
 ## [unreleased]
 ### fixed
-- Fixed [#105](https://github.com/async-raft/async-raft/issues/105) where function `set_target_state` missing `else` condition.
+- Fixed [#105](https://github.com/async-raft/async-raft/issues/105) where function `set_target_state` missing `else` condition.  
 
 ## async-raft 0.6.0
 The big news for this release is that we are now based on Tokio 1.0! Big shoutout to @xu-cheng for doing all of the heavy lifting for the Tokio 1.0 update, along with many other changes which are part of this release.
