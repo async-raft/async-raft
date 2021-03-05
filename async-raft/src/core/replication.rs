@@ -251,6 +251,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 /// one per node of the cluster, including the leader as long as the leader is not stepping down.
 /// - `current_commit`: is the Raft node's `current_commit` value before invoking this function.
 /// The output of this function will never be less than this value.
+/// - `leader_term`: the current leader term, only log entries from the leader’s current term are committed by counting replicas;
 ///
 /// NOTE: there are a few edge cases accounted for in this routine which will never practically
 /// be hit, but they are accounted for in the name of good measure.
