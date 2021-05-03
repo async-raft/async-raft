@@ -82,9 +82,92 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         );
     }
 
-    #[tracing::instrument(level = "trace", skip(self, _tx))]
-    pub(super) async fn add_voter(&mut self, _id: NodeId, _tx: ChangeMembershipTx) {
+    #[tracing::instrument(level = "trace", skip(self, tx))]
+    pub(super) async fn add_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
+        if self.core.membership.contains(&id) {
+            let _ = tx.send(Err(ChangeConfigError::Noop));
+            return;
+        }
 
+        let can_change_config = matches!(self.consensus_state, ConsensusState::Uniform);
+        if !can_change_config {
+            let _ = tx.send(Err(ChangeConfigError::ConfigChangeInProgress));
+            return;
+        }
+
+        let is_node_ready_to_join = match self.non_voters.get(&id) {
+            Some(node) => node.is_ready_to_join,
+
+            // Node does not yet have a repl stream, spawn one.
+            None => {
+                // Spawn a replication stream for the new member. Track state as a non-voter so that it
+                // can be updated to be added to the cluster config once it has been brought up-to-date.
+                let state = self.spawn_replication_stream(id);
+                self.non_voters.insert(
+                    id,
+                    NonVoterReplicationState {
+                        state,
+                        is_ready_to_join: false,
+                        tx: None,
+                    },
+                );
+
+                false
+            }
+        };
+
+        let mut new_members = self.core.membership.members.clone();
+        new_members.insert(id);
+
+        // If there are new nodes which need to sync, then we need to wait until they are synced.
+        // Once they've finished, this routine will be called again to progress further.
+        if !is_node_ready_to_join {
+            let mut awaiting = HashSet::new();
+            awaiting.insert(id);
+
+            self.consensus_state = ConsensusState::NonVoterSync {
+                members: new_members,
+                awaiting,
+                tx,
+            };
+            return;
+        }
+
+        self.consensus_state = ConsensusState::ConfigChange;
+
+        self.core.membership.members = new_members;
+
+        // Propagate the command as any other client request.
+        let payload = ClientWriteRequest::<D>::new_config(self.core.membership.clone());
+        let (tx_config_change_committed, rx_config_change_committed) = oneshot::channel();
+        let entry = match self.append_payload_to_log(payload.entry).await {
+            Ok(entry) => entry,
+            Err(err) => {
+                let _ = tx.send(Err(err.into()));
+                return;
+            }
+        };
+        let cr_entry = ClientRequestEntry::from_entry(entry, tx_config_change_committed);
+        self.replicate_client_request(cr_entry).await;
+        self.core.report_metrics();
+
+        let (tx_config_changed, rx_config_changed) = oneshot::channel();
+        self.config_change_done_cb = Some(tx_config_changed);
+        self.config_change_committed_cb.push(rx_config_change_committed);
+        tokio::spawn(async move {
+            let res = rx_config_changed
+                .map_err(|_| RaftError::ShuttingDown)
+                .into_future()
+                .then(|res| {
+                    futures::future::ready(match res {
+                        Ok(Ok(_)) => Ok(()),
+                        Ok(Err(err)) => Err(ChangeConfigError::from(err)),
+                        Err(err) => Err(ChangeConfigError::from(err)),
+                    })
+                })
+                .await;
+            let _ = tx.send(res);
+        });
     }
 
     #[tracing::instrument(level = "trace", skip(self, tx))]
@@ -98,7 +181,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         // Only allow config updates when currently in a uniform consensus state.
         match &self.consensus_state {
             ConsensusState::Uniform => (),
-            ConsensusState::NonVoterSync { .. } | ConsensusState::Joint { .. } => {
+            ConsensusState::NonVoterSync { .. } | ConsensusState::Joint { .. } | ConsensusState::ConfigChange => {
                 let _ = tx.send(Err(ChangeConfigError::ConfigChangeInProgress));
                 return;
             }
@@ -180,6 +263,48 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                 .await;
             let _ = tx.send(res);
         });
+    }
+
+    #[tracing::instrument(level = "trace", skip(self))]
+    pub(super) async fn handle_config_change_committed(&mut self, index: u64) -> Result<(), RaftError> {
+        self.consensus_state = ConsensusState::Uniform;
+
+        // Step down if needed.
+        if self.is_stepping_down {
+            tracing::debug!("raft node is stepping down");
+            self.core.set_target_state(State::NonVoter);
+            self.core.update_current_leader(UpdateCurrentLeader::Unknown);
+            return Ok(());
+        }
+
+        // Remove any replication streams which have replicated this config & which are no longer
+        // cluster members. All other replication streams which are no longer cluster members, but
+        // which have not yet replicated this config will be marked for removal.
+        let membership = &self.core.membership;
+        let nodes_to_remove: Vec<_> = self
+            .nodes
+            .iter_mut()
+            .filter(|(id, _)| !membership.contains(id))
+            .filter_map(|(idx, replstate)| {
+                if replstate.match_index >= index {
+                    Some(*idx)
+                } else {
+                    replstate.remove_after_commit = Some(index);
+                    None
+                }
+            })
+            .collect();
+
+        for node in nodes_to_remove {
+            tracing::debug!({ target = node }, "removing target node from replication pool");
+            if let Some(node) = self.nodes.remove(&node) {
+                let _ = node.replstream.repltx.send(RaftEvent::Terminate);
+            }
+        }
+
+        self.core.report_metrics();
+
+        Ok(())
     }
 
     /// Handle the commitment of a joint consensus cluster configuration.

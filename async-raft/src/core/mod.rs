@@ -556,6 +556,12 @@ struct LeaderState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: Raf
     pub(super) propose_config_change_cb: Option<oneshot::Sender<Result<(), RaftError>>>,
     /// An optional receiver for when a joint consensus config is committed.
     pub(super) joint_consensus_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
+
+    pub(super) config_change_done_cb: Option<oneshot::Sender<Result<(), RaftError>>>,
+
+    /// An optional receiver for when a config change is committed.
+    pub(super) config_change_committed_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
+
     /// An optional receiver for when a uniform consensus config is committed.
     pub(super) uniform_consensus_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
 }
@@ -580,6 +586,8 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             awaiting_committed: Vec::new(),
             propose_config_change_cb: None,
             joint_consensus_cb: FuturesOrdered::new(),
+            config_change_committed_cb: FuturesOrdered::new(),
+            config_change_done_cb: None,
             uniform_consensus_cb: FuturesOrdered::new(),
         }
     }
@@ -658,6 +666,19 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         }
                     }
                 }
+                Some(Ok(res)) = self.config_change_committed_cb.next() => {
+                    match res {
+                        Ok(index) => {
+                            let final_res = self.handle_config_change_committed(index).await;
+                            if let Some(cb) = self.config_change_done_cb.take() {
+                                let _ = cb.send(final_res.map_err(From::from));
+                            }
+                        }
+                        Err(err) => if let Some(cb) = self.config_change_done_cb.take() {
+                            let _ = cb.send(Err(err));
+                        }
+                  }
+                },
                 Some(Ok(res)) = self.uniform_consensus_cb.next() => {
                     match res {
                         Ok(index) => {
@@ -703,6 +724,8 @@ struct NonVoterReplicationState<D: AppData> {
 
 /// A state enum used by Raft leaders to navigate the joint consensus protocol.
 pub enum ConsensusState {
+    ConfigChange,
+
     /// The cluster is preparring to go into joint consensus, but the leader is still syncing
     /// some non-voters to prepare them for cluster membership.
     NonVoterSync {
