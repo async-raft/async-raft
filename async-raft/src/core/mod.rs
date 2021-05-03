@@ -650,6 +650,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::AddNonVoter{id, tx} => {
                         self.add_member(id, tx);
                     }
+                    RaftMsg::RemoveNonVoter{id, tx} => {
+                        self.remove_non_voter(id, tx);
+                    }
                     RaftMsg::ChangeMembership{members, tx} => {
                         self.change_membership(members, tx).await;
                     }
@@ -858,6 +861,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         RaftMsg::AddVoter{tx, ..} => {
                             self.core.reject_config_change_not_leader(tx);
                         }
+                        RaftMsg::RemoveNonVoter{tx, ..} => {
+                            self.core.reject_config_change_not_leader(tx);
+                        }
                     },
                     Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                     Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
@@ -925,6 +931,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::AddVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
+                    RaftMsg::RemoveNonVoter{tx, ..} => {
+                        self.core.reject_config_change_not_leader(tx);
+                    }
                 },
                 Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                 Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
@@ -985,6 +994,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::AddVoter{tx, ..} => {
+                        self.core.reject_config_change_not_leader(tx);
+                    }
+                    RaftMsg::RemoveNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                 },

@@ -82,6 +82,26 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         );
     }
 
+    pub(super) fn remove_non_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
+        let want_to_remove_node_catching_up = match self.consensus_state {
+            ConsensusState::CatchingUp { node, .. } => node == id,
+            _ => false
+        };
+        if want_to_remove_node_catching_up {
+            let _ = tx.send(Err(ChangeConfigError::ConfigChangeInProgress));
+            return;
+        }
+
+        if let Some(state) = self.non_voters.remove(&id) {
+            let _ = state.state.replstream.repltx.send(RaftEvent::Terminate);
+            let _ = tx.send(Ok(()));
+            return;
+        }
+
+        tracing::debug!("target node is is not recognized as a Non-Voter");
+        let _ = tx.send(Err(ChangeConfigError::Noop));
+    }
+
     #[tracing::instrument(level = "trace", skip(self, tx))]
     pub(super) async fn add_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
         if self.core.membership.contains(&id) {

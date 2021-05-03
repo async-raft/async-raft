@@ -246,6 +246,19 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .and_then(|res| res)?)
     }
 
+    #[tracing::instrument(level = "debug", skip(self))]
+    pub async fn remove_non_voter(&self, old_non_voter: NodeId) -> Result<(), ChangeConfigError> {
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .tx_api
+            .send(RaftMsg::RemoveNonVoter { id: old_non_voter, tx })
+            .map_err(|_| RaftError::ShuttingDown)?;
+        Ok(rx
+            .await
+            .map_err(|_| ChangeConfigError::RaftError(RaftError::ShuttingDown))
+            .and_then(|res| res)?)
+    }
+
     /// Propose a cluster configuration change (§6).
     ///
     /// This will cause the leader to begin a cluster membership configuration change. If there
@@ -346,6 +359,10 @@ pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
         members: HashSet<NodeId>,
         tx: ChangeMembershipTx,
     },
+    RemoveNonVoter {
+        id: NodeId,
+        tx: ChangeMembershipTx,
+    }
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
