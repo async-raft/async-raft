@@ -724,6 +724,10 @@ struct NonVoterReplicationState<D: AppData> {
 
 /// A state enum used by Raft leaders to navigate the joint consensus protocol.
 pub enum ConsensusState {
+    CatchingUp {
+        node: NodeId,
+        tx: ChangeMembershipTx,
+    },
     ConfigChange,
 
     /// The cluster is preparring to go into joint consensus, but the leader is still syncing

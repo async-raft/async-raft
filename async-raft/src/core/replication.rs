@@ -84,6 +84,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                             self.consensus_state = ConsensusState::NonVoterSync { awaiting, members, tx };
                         }
                     }
+                    ConsensusState::CatchingUp { node, tx } => {
+                        self.consensus_state = ConsensusState::Uniform;
+                        self.add_voter(node, tx).await;
+                    }
                     other => self.consensus_state = other, // Set the original value back to what it was.
                 }
             }

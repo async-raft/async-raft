@@ -97,45 +97,37 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
         let is_node_ready_to_join = match self.non_voters.get(&id) {
             Some(node) => node.is_ready_to_join,
-
-            // Node does not yet have a repl stream, spawn one.
-            None => {
-                // Spawn a replication stream for the new member. Track state as a non-voter so that it
-                // can be updated to be added to the cluster config once it has been brought up-to-date.
-                let state = self.spawn_replication_stream(id);
-                self.non_voters.insert(
-                    id,
-                    NonVoterReplicationState {
-                        state,
-                        is_ready_to_join: false,
-                        tx: None,
-                    },
-                );
-
-                false
-            }
+            None => false
         };
-
-        let mut new_members = self.core.membership.members.clone();
-        new_members.insert(id);
-
-        // If there are new nodes which need to sync, then we need to wait until they are synced.
-        // Once they've finished, this routine will be called again to progress further.
         if !is_node_ready_to_join {
-            let mut awaiting = HashSet::new();
-            awaiting.insert(id);
+            // Spawn a replication stream for the new member. Track state as a non-voter so that it
+            // can be updated to be added to the cluster config once it has been brought up-to-date.
+            let state = self.spawn_replication_stream(id);
+            self.non_voters.insert(
+                id,
+                NonVoterReplicationState {
+                    state,
+                    is_ready_to_join: false,
+                    tx: None,
+                },
+            );
 
-            self.consensus_state = ConsensusState::NonVoterSync {
-                members: new_members,
-                awaiting,
+            self.consensus_state = ConsensusState::CatchingUp {
+                node: id,
                 tx,
             };
+
             return;
         }
 
         self.consensus_state = ConsensusState::ConfigChange;
 
+        let mut new_members = self.core.membership.members.clone();
+        new_members.insert(id);
         self.core.membership.members = new_members;
+
+        let non_voter_state = self.non_voters.remove(&id).unwrap();
+        self.nodes.insert(id, non_voter_state.state);
 
         // Propagate the command as any other client request.
         let payload = ClientWriteRequest::<D>::new_config(self.core.membership.clone());
@@ -181,7 +173,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         // Only allow config updates when currently in a uniform consensus state.
         match &self.consensus_state {
             ConsensusState::Uniform => (),
-            ConsensusState::NonVoterSync { .. } | ConsensusState::Joint { .. } | ConsensusState::ConfigChange => {
+            ConsensusState::NonVoterSync { .. } | ConsensusState::Joint { .. } | ConsensusState::ConfigChange | ConsensusState::CatchingUp { .. } => {
                 let _ = tx.send(Err(ChangeConfigError::ConfigChangeInProgress));
                 return;
             }
