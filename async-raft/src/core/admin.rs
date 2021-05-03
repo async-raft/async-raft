@@ -82,6 +82,11 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         );
     }
 
+    #[tracing::instrument(level = "trace", skip(self, _tx))]
+    pub(super) async fn add_voter(&mut self, _id: NodeId, _tx: ChangeMembershipTx) {
+
+    }
+
     #[tracing::instrument(level = "trace", skip(self, tx))]
     pub(super) async fn change_membership(&mut self, members: HashSet<NodeId>, tx: ChangeMembershipTx) {
         // Ensure cluster will have at least one node.

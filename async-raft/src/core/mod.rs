@@ -645,6 +645,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::ChangeMembership{members, tx} => {
                         self.change_membership(members, tx).await;
                     }
+                    RaftMsg::AddVoter{id, tx} => {
+                        self.add_voter(id, tx).await;
+                    }
                 },
                 Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                 Some(Ok(res)) = self.joint_consensus_cb.next() => {
@@ -825,6 +828,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         RaftMsg::ChangeMembership{tx, ..} => {
                             self.core.reject_config_change_not_leader(tx);
                         }
+                        RaftMsg::AddVoter{tx, ..} => {
+                            self.core.reject_config_change_not_leader(tx);
+                        }
                     },
                     Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                     Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
@@ -889,6 +895,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::ChangeMembership{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
+                    RaftMsg::AddVoter{tx, ..} => {
+                        self.core.reject_config_change_not_leader(tx);
+                    }
                 },
                 Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                 Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
@@ -946,6 +955,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::ChangeMembership{tx, ..} => {
+                        self.core.reject_config_change_not_leader(tx);
+                    }
+                    RaftMsg::AddVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                 },

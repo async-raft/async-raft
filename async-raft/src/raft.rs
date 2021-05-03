@@ -270,6 +270,18 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .and_then(|res| res)?)
     }
 
+    pub async fn add_voter(&self, new_voter: NodeId) -> Result<(), ChangeConfigError> {
+        let (tx, rx) = oneshot::channel();
+        self.inner
+            .tx_api
+            .send(RaftMsg::AddVoter { id: new_voter, tx })
+            .map_err(|_| RaftError::ShuttingDown)?;
+        Ok(rx
+            .await
+            .map_err(|_| ChangeConfigError::RaftError(RaftError::ShuttingDown))
+            .and_then(|res| res)?)
+    }
+
     /// Get a handle to the metrics channel.
     pub fn metrics(&self) -> watch::Receiver<RaftMetrics> {
         self.inner.rx_metrics.clone()
@@ -323,6 +335,10 @@ pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
         tx: oneshot::Sender<Result<(), InitializeError>>,
     },
     AddNonVoter {
+        id: NodeId,
+        tx: ChangeMembershipTx,
+    },
+    AddVoter {
         id: NodeId,
         tx: ChangeMembershipTx,
     },
