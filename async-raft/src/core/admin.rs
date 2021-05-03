@@ -129,6 +129,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         let non_voter_state = self.non_voters.remove(&id).unwrap();
         self.nodes.insert(id, non_voter_state.state);
 
+        tracing::debug!("members: {:?}", self.core.membership.members);
+        tracing::debug!("non-voters: {:?}", self.non_voters.keys());
+        tracing::debug!("nodes: {:?}", self.nodes.keys());
+
         // Propagate the command as any other client request.
         let payload = ClientWriteRequest::<D>::new_config(self.core.membership.clone());
         let (tx_config_change_committed, rx_config_change_committed) = oneshot::channel();
