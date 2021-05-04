@@ -633,7 +633,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         self.core.reject_init_with_config(tx);
                     }
                     RaftMsg::AddNonVoter{id, tx} => {
-                        self.add_member(id, tx);
+                        self.add_non_voter(id, tx);
                     }
                     RaftMsg::RemoveNonVoter{id, tx} => {
                         self.remove_non_voter(id, tx);

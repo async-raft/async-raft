@@ -50,9 +50,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     /// Add a new node to the cluster as a non-voter, bringing it up-to-speed, and then responding
     /// on the given channel.
     #[tracing::instrument(level = "trace", skip(self, tx))]
-    pub(super) fn add_member(&mut self, target: NodeId, tx: oneshot::Sender<Result<(), ChangeConfigError>>) {
+    pub(super) fn add_non_voter(&mut self, target: NodeId, tx: oneshot::Sender<Result<(), ChangeConfigError>>) {
         // Ensure the node doesn't already exist in the current config, in the set of new nodes
-        // alreading being synced, or in the nodes being removed.
+        // already being synced, or in the nodes being removed.
         if self.core.membership.contains(&target) || self.non_voters.contains_key(&target) {
             tracing::debug!("target node is already a cluster member or is being synced");
             let _ = tx.send(Err(ChangeConfigError::Noop));
