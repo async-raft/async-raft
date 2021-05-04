@@ -4,7 +4,7 @@ use futures::future::{FutureExt, TryFutureExt};
 use tokio::sync::oneshot;
 
 use crate::core::client::ClientRequestEntry;
-use crate::core::{ConsensusState, LeaderState, NonVoterReplicationState, NonVoterState, State, UpdateCurrentLeader};
+use crate::core::{ConsensusState, LeaderState, NonVoterReplicationState, NonVoterState, State, UpdateCurrentLeader, ConfigChangeOperation};
 use crate::error::{ChangeConfigError, InitializeError, RaftError};
 use crate::raft::{ChangeMembershipTx, ClientWriteRequest, MembershipConfig};
 use crate::replication::RaftEvent;
@@ -115,6 +115,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             return;
         }
 
+        // If the new node already has a replication stream AND is caught up with its log, then
+        // it is considered "ready to join", and we can immediately proceed with the config change.
+        // Else, we first need to bring the node up-to-speed.
         let is_node_ready_to_join = match self.non_voters.get(&id) {
             Some(node) => node.is_ready_to_join,
             None => false
@@ -122,16 +125,25 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         if !is_node_ready_to_join {
             // Spawn a replication stream for the new member. Track state as a non-voter so that it
             // can be updated to be added to the cluster config once it has been brought up-to-date.
-            let state = self.spawn_replication_stream(id);
-            self.non_voters.insert(
-                id,
-                NonVoterReplicationState {
-                    state,
-                    is_ready_to_join: false,
-                    tx: None,
-                },
-            );
+            if !self.non_voters.contains_key(&id) {
+                let state = self.spawn_replication_stream(id);
+                self.non_voters.insert(
+                    id,
+                    NonVoterReplicationState {
+                        state,
+                        is_ready_to_join: false,
+                        tx: None,
+                    },
+                );
+            }
 
+            // By entering CatchingUp state, we prevent other configuration
+            // changes from happening. Bringing the new node up to speed
+            // should happen pretty quickly, so this should not disrupt
+            // other config changes for a long a time.
+            //
+            // Once the new node is brought up to speed,
+            // add_voter will be called again automatically.
             self.consensus_state = ConsensusState::CatchingUp {
                 node: id,
                 tx,
@@ -140,21 +152,41 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             return;
         }
 
-        self.consensus_state = ConsensusState::ConfigChange;
+        self.consensus_state = ConsensusState::ConfigChange {
+            node: id,
+            operation: ConfigChangeOperation::AddingNode,
+        };
 
-        let mut new_members = self.core.membership.members.clone();
-        new_members.insert(id);
-        self.core.membership.members = new_members;
+        // The new, changed configuration takes effect immediately.
+        // Most importantly, we insert the new node into the self.nodes array,
+        // which means that the new node counts towards the majority when replicating
+        // the configuration change.
+        let mut changed_members = self.core.membership.members.clone();
+        changed_members.insert(id);
+        self.core.membership.members = changed_members;
 
+        // Here, it is safe to unwrap, as new nodes always start their lives as Non-Voters:
+        //   * either, they are explicitly added as Non-Voters first,
+        //   * or they're added as Non-Voters when calling add_voter.
         let non_voter_state = self.non_voters.remove(&id).unwrap();
         self.nodes.insert(id, non_voter_state.state);
 
+        // Replicate the membership change using the normal Raft mechanism,
+        // and respond on tx once done.
+        self.propagate_membership_change(tx).await;
+    }
+
+    #[tracing::instrument(level = "trace", skip(self, tx))]
+    async fn propagate_membership_change(&mut self, tx: ChangeMembershipTx) {
         tracing::debug!("members: {:?}", self.core.membership.members);
         tracing::debug!("non-voters: {:?}", self.non_voters.keys());
         tracing::debug!("nodes: {:?}", self.nodes.keys());
 
-        // Propagate the command as any other client request.
+        // The config change is replicated using the normal
+        // Raft mechanism.
         let payload = ClientWriteRequest::<D>::new_config(self.core.membership.clone());
+        // Raft will notify us on this channel once the config change is committed,
+        // and thus, replicated to the majority of the NEW configuration's nodes.
         let (tx_config_change_committed, rx_config_change_committed) = oneshot::channel();
         let entry = match self.append_payload_to_log(payload.entry).await {
             Ok(entry) => entry,
@@ -167,6 +199,8 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         self.replicate_client_request(cr_entry).await;
         self.core.report_metrics();
 
+        // Channel on which we wait for the config change to finish. Once the
+        // value is sent over the channel, we can respond on our tx channel.
         let (tx_config_changed, rx_config_changed) = oneshot::channel();
         self.config_change_done_cb = Some(tx_config_changed);
         self.config_change_committed_cb.push(rx_config_change_committed);
@@ -187,6 +221,38 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     }
 
     #[tracing::instrument(level = "trace", skip(self, tx))]
+    pub(super) async fn remove_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
+        if !self.core.membership.contains(&id) {
+            let _ = tx.send(Err(ChangeConfigError::Noop));
+            return;
+        }
+
+        let can_change_config = matches!(self.consensus_state, ConsensusState::Uniform);
+        if !can_change_config {
+            let _ = tx.send(Err(ChangeConfigError::ConfigChangeInProgress));
+            return;
+        }
+
+        self.consensus_state = ConsensusState::ConfigChange {
+            node: id,
+            operation: ConfigChangeOperation::RemovingNode,
+        };
+
+        // The new, changed configuration takes effect immediately.
+        let mut changed_members = self.core.membership.members.clone();
+        changed_members.remove(&id);
+        self.core.membership.members = changed_members;
+
+        if !self.core.membership.members.contains(&self.core.id) {
+            self.is_stepping_down = true;
+        }
+
+        // Replicate the membership change using the normal Raft mechanism,
+        // and respond on tx once done.
+        self.propagate_membership_change(tx).await;
+    }
+
+    #[tracing::instrument(level = "trace", skip(self, tx))]
     pub(super) async fn change_membership(&mut self, members: HashSet<NodeId>, tx: ChangeMembershipTx) {
         // Ensure cluster will have at least one node.
         if members.is_empty() {
@@ -197,7 +263,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         // Only allow config updates when currently in a uniform consensus state.
         match &self.consensus_state {
             ConsensusState::Uniform => (),
-            ConsensusState::NonVoterSync { .. } | ConsensusState::Joint { .. } | ConsensusState::ConfigChange | ConsensusState::CatchingUp { .. } => {
+            ConsensusState::NonVoterSync { .. } | ConsensusState::Joint { .. } | ConsensusState::ConfigChange { .. } | ConsensusState::CatchingUp { .. } => {
                 let _ = tx.send(Err(ChangeConfigError::ConfigChangeInProgress));
                 return;
             }
@@ -283,56 +349,40 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
     #[tracing::instrument(level = "trace", skip(self))]
     pub(super) async fn handle_config_change_committed(&mut self, index: u64) -> Result<(), RaftError> {
-        self.consensus_state = ConsensusState::Uniform;
+        let node_to_remove = match self.consensus_state {
+            ConsensusState::ConfigChange { node, operation }
+                if operation == ConfigChangeOperation::RemovingNode => Some(node),
+            _ => None,
+        };
+
+        if let Some(node) = node_to_remove {
+            let mut should_immediately_remove_node = false;
+            if let Some(replstate) = self.nodes.get_mut(&node) {
+                if replstate.match_index >= index {
+                    should_immediately_remove_node = true;
+                } else {
+                    replstate.remove_after_commit = Some(index);
+                }
+            }
+
+            if should_immediately_remove_node {
+                tracing::debug!({ target = node }, "removing target node from replication pool");
+                if let Some(node) = self.nodes.remove(&node) {
+                    let _ = node.replstream.repltx.send(RaftEvent::Terminate);
+                }
+            }
+        }
 
         // Step down if needed.
         if self.is_stepping_down {
             tracing::debug!("raft node is stepping down");
             self.core.set_target_state(State::NonVoter);
             self.core.update_current_leader(UpdateCurrentLeader::Unknown);
-            return Ok(());
         }
 
-        // Remove any replication streams which have replicated this config & which are no longer
-        // cluster members. All other replication streams which are no longer cluster members, but
-        // which have not yet replicated this config will be marked for removal.
-        let membership = &self.core.membership;
-        let nodes_to_remove: Vec<_> = self
-            .nodes
-            .iter_mut()
-            .filter(|(id, _)| !membership.contains(id))
-            .filter_map(|(idx, replstate)| {
-                if replstate.match_index >= index {
-                    Some(*idx)
-                } else {
-                    replstate.remove_after_commit = Some(index);
-                    None
-                }
-            })
-            .collect();
-
-        for node in nodes_to_remove {
-            tracing::debug!({ target = node }, "removing target node from replication pool");
-            if let Some(node) = self.nodes.remove(&node) {
-                let _ = node.replstream.repltx.send(RaftEvent::Terminate);
-            }
-        }
-
+        self.consensus_state = ConsensusState::Uniform;
         self.core.report_metrics();
 
-        Ok(())
-    }
-
-    /// Handle the commitment of a joint consensus cluster configuration.
-    #[tracing::instrument(level = "trace", skip(self))]
-    pub(super) async fn handle_joint_consensus_committed(&mut self) -> Result<(), RaftError> {
-        if let ConsensusState::Joint { is_committed, .. } = &mut self.consensus_state {
-            *is_committed = true; // Mark as comitted.
-        }
-        // Only proceed to finalize this joint consensus if there are no remaining nodes being synced.
-        if self.consensus_state.is_joint_consensus_safe_to_finalize() {
-            self.finalize_joint_consensus().await?;
-        }
         Ok(())
     }
 

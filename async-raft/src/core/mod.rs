@@ -659,6 +659,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::AddVoter{id, tx} => {
                         self.add_voter(id, tx).await;
                     }
+                    RaftMsg::RemoveVoter{id, tx} => {
+                        self.remove_voter(id, tx).await;
+                    }
                 },
                 Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                 Some(Ok(res)) = self.joint_consensus_cb.next() => {
@@ -725,13 +728,22 @@ struct NonVoterReplicationState<D: AppData> {
     pub tx: Option<oneshot::Sender<Result<(), ChangeConfigError>>>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum ConfigChangeOperation {
+    AddingNode,
+    RemovingNode,
+}
+
 /// A state enum used by Raft leaders to navigate the joint consensus protocol.
 pub enum ConsensusState {
     CatchingUp {
         node: NodeId,
         tx: ChangeMembershipTx,
     },
-    ConfigChange,
+    ConfigChange {
+        node: NodeId,
+        operation: ConfigChangeOperation,
+    },
 
     /// The cluster is preparring to go into joint consensus, but the leader is still syncing
     /// some non-voters to prepare them for cluster membership.
@@ -864,6 +876,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         RaftMsg::RemoveNonVoter{tx, ..} => {
                             self.core.reject_config_change_not_leader(tx);
                         }
+                        RaftMsg::RemoveVoter{tx, ..} => {
+                            self.core.reject_config_change_not_leader(tx);
+                        }
                     },
                     Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                     Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
@@ -934,6 +949,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::RemoveNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
+                    RaftMsg::RemoveVoter{tx, ..} => {
+                        self.core.reject_config_change_not_leader(tx);
+                    }
                 },
                 Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
                 Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
@@ -997,6 +1015,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::RemoveNonVoter{tx, ..} => {
+                        self.core.reject_config_change_not_leader(tx);
+                    }
+                    RaftMsg::RemoveVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                 },
