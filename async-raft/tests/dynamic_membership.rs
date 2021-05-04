@@ -1,80 +1,135 @@
 mod fixtures;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use async_raft::Config;
-use futures::stream::StreamExt;
-use maplit::hashset;
-use tokio::time::sleep;
 
-use fixtures::RaftRouter;
+use fixtures::{RaftRouter, sleep_for_a_sec};
+use tracing::info;
+
+const ORIGINAL_LEADER: u64 = 0;
+const CLIENT_ID: &str = "client";
+const CLUSTER_NAME: &str = "test";
 
 /// Dynamic membership test.
 ///
-/// What does this test do?
+/// Test plan:
 ///
-/// - bring a single-node cluster online.
-/// - add a few new nodes and assert that they've joined the cluster properly.
-/// - propose a new config change where the old master is not present, and assert that it steps down.
-/// - temporarily isolate the new master, and assert that a new master takes over.
-/// - restore the isolated node and assert that it becomes a follower.
+///   1. Create a single-node cluster of Node 0.
+///   1. Add a new nodes 1, 2, 3, 4 and assert that they've joined the cluster properly.
+///   1. Propose a new config change where the old leader, Node 0 is not present, and assert that it steps down.
+///   1. Temporarily isolate the new leader, and assert that an even newer leader takes over.
+///   1. Restore the isolated node and assert that it becomes a follower.
 ///
 /// RUST_LOG=async_raft,memstore,dynamic_membership=trace cargo test -p async-raft --test dynamic_membership
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn dynamic_membership() -> Result<()> {
     fixtures::init_tracing();
 
-    // Setup test dependencies.
-    let config = Arc::new(Config::build("test".into()).validate().expect("failed to build Raft config"));
-    let router = Arc::new(RaftRouter::new(config.clone()));
-    router.new_raft_node(0).await;
+    let router = {
+        info!("--- Setup test dependencies");
 
-    // Assert all nodes are in non-voter state & have no entries.
-    sleep(Duration::from_secs(3)).await;
-    router.assert_pristine_cluster().await;
+        let config = Arc::new(Config::build(CLUSTER_NAME.into()).validate().expect("failed to build Raft config"));
+        Arc::new(RaftRouter::new(config.clone()))
+    };
 
-    // Initialize the cluster, then assert that a stable cluster was formed & held.
-    tracing::info!("--- initializing cluster");
-    router.initialize_from_single_node(0).await?;
-    sleep(Duration::from_secs(3)).await;
-    router.assert_stable_cluster(Some(1), Some(1)).await;
+    {
+        info!("--- Initializing and asserting on a single-node cluster");
 
-    // Sync some new nodes.
-    router.new_raft_node(1).await;
-    router.new_raft_node(2).await;
-    router.new_raft_node(3).await;
-    router.new_raft_node(4).await;
-    tracing::info!("--- adding new nodes to cluster");
-    let mut new_nodes = futures::stream::FuturesUnordered::new();
-    new_nodes.push(router.add_non_voter(0, 1));
-    new_nodes.push(router.add_non_voter(0, 2));
-    new_nodes.push(router.add_non_voter(0, 3));
-    new_nodes.push(router.add_non_voter(0, 4));
-    while let Some(inner) = new_nodes.next().await {
-        inner?;
+        router.new_raft_node(ORIGINAL_LEADER).await;
+        sleep_for_a_sec().await;
+        router.assert_pristine_cluster().await;
+
+        router.initialize_from_single_node(ORIGINAL_LEADER).await?;
+        sleep_for_a_sec().await;
+        router.assert_stable_cluster(Some(1), Some(1)).await;
     }
-    tracing::info!("--- changing cluster config");
-    //router.change_membership(0, hashset![0, 1, 2, 3, 4]).await?;
-    sleep(Duration::from_secs(5)).await;
-    router.assert_stable_cluster(Some(1), Some(3)).await; // Still in term 1, so leader is still node 0.
 
-    // Isolate old leader and assert that a new leader takes over.
-    tracing::info!("--- isolating master node 0");
-    router.isolate_node(0).await;
-    sleep(Duration::from_secs(5)).await; // Wait for election and for everything to stabilize (this is way longer than needed).
-    router.assert_stable_cluster(Some(2), Some(4)).await;
-    let leader = router.leader().await.expect("expected new leader");
-    assert!(leader != 0, "expected new leader to be different from the old leader");
+    {
+        info!("--- Syncing nodes 1, 2, 3, 4");
 
-    // Restore isolated node.
-    router.restore_node(0).await;
-    sleep(Duration::from_secs(5)).await; // Wait for election and for everything to stabilize (this is way longer than needed).
-    router.assert_stable_cluster(Some(2), Some(4)).await; // We should still be in term 2, as leaders should
-                                                          // not be deposed when they are not missing heartbeats.
-    let current_leader = router.leader().await.expect("expected to find current leader");
-    assert_eq!(leader, current_leader, "expected cluster leadership to stay the same");
+        for node in 1u64..=4 {
+            router.new_raft_node(node).await;
+        }
+    }
+
+    {
+        info!("--- Adding nodes 1, 2, 3, 4 as voters");
+
+        for node in 1u64..=4 {
+            info!("--- Adding node {}", node);
+            router.new_raft_node(node).await;
+
+            let add_voter_router = Arc::clone(&router);
+            let voter_added = tokio::spawn(async move {
+                let _ = add_voter_router.add_voter(ORIGINAL_LEADER, node).await;
+            });
+
+            let request_router = Arc::clone(&router);
+            let request_processed = tokio::spawn(async move {
+                sleep_for_a_sec().await;
+
+                request_router.client_request(ORIGINAL_LEADER, CLIENT_ID, node).await;
+            });
+
+            tokio::join!(voter_added, request_processed).0?;
+        }
+    }
+
+    sleep_for_a_sec().await;
+
+    {
+        info!("--- Asserting on the new cluster configuration");
+
+        router.assert_stable_cluster(
+            Some(1),
+            Some(9),
+        ).await;
+    }
+
+    {
+        info!("--- Isolating original leader Node 0");
+
+        router.isolate_node(ORIGINAL_LEADER).await;
+    }
+
+    // Wait for election and for everything to stabilize (this is way longer than needed).
+    sleep_for_a_sec().await;
+
+    let new_leader = {
+        info!("--- Asserting that a new leader took over");
+
+        router.assert_stable_cluster(
+            Some(2),
+            Some(10)
+        ).await;
+        let new_leader = router.leader().await.expect("expected new leader");
+        assert_ne!(new_leader, ORIGINAL_LEADER, "expected new leader to be different from the old leader");
+
+        new_leader
+    };
+
+    {
+        info!("--- Restoring isolated old leader Node 0");
+
+        router.restore_node(ORIGINAL_LEADER).await;
+    }
+
+    sleep_for_a_sec().await;
+
+    {
+        info!("--- Asserting that the leader of the cluster stayed the same");
+
+        // We should still be in term 2, as leaders should not be deposed when
+        // they are not missing heartbeats.
+        router.assert_stable_cluster(
+            Some(2),
+            Some(10)
+        ).await;
+        let current_leader = router.leader().await.expect("expected to find current leader");
+        assert_eq!(new_leader, current_leader, "expected cluster leadership to stay the same");
+    }
 
     Ok(())
 }

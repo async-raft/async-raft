@@ -18,6 +18,7 @@ use async_raft::{Config, NodeId, Raft, RaftMetrics, RaftNetwork, State};
 use memstore::{ClientRequest as MemClientRequest, ClientResponse as MemClientResponse, MemStore};
 use tokio::sync::RwLock;
 use tracing_subscriber::prelude::*;
+use tokio::time::{sleep, Duration};
 
 /// A concrete Raft type used during testing.
 pub type MemRaft = Raft<MemClientRequest, MemClientResponse, RaftRouter, MemStore>;
@@ -31,6 +32,14 @@ pub fn init_tracing() {
         .with(tracing_subscriber::EnvFilter::from_default_env())
         .with(fmt_layer);
     tracing::subscriber::set_global_default(subscriber).expect("error setting global tracing subscriber");
+}
+
+pub async fn sleep_for_secs(secs: u64) {
+    sleep(Duration::from_secs(secs)).await;
+}
+
+pub async fn sleep_for_a_sec() {
+    sleep_for_secs(1).await;
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
