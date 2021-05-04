@@ -65,7 +65,6 @@ async fn client_writes() -> Result<()> {
                 1,
                 MembershipConfig {
                     members: hashset![0, 1, 2],
-                    members_after_consensus: None,
                 },
             )),
         )

@@ -59,7 +59,6 @@ async fn compaction() -> Result<()> {
                 1,
                 MembershipConfig {
                     members: hashset![0],
-                    members_after_consensus: None,
                 },
             )),
         )
@@ -68,10 +67,10 @@ async fn compaction() -> Result<()> {
     // Add a new node and assert that it received the same snapshot.
     router.new_raft_node(1).await;
     router.add_non_voter(0, 1).await.expect("failed to add new node as non-voter");
-    router
+    /*router
         .change_membership(0, hashset![0, 1])
         .await
-        .expect("failed to modify cluster membership");
+        .expect("failed to modify cluster membership");*/
     sleep(Duration::from_secs(5)).await; // Wait to ensure metrics are updated (this is way more than enough).
     router.assert_stable_cluster(Some(1), Some(502)).await; // We expect index to be 500 + 2 (joint & uniform config change entries).
     let expected_snap = Some((
@@ -79,7 +78,6 @@ async fn compaction() -> Result<()> {
         1,
         MembershipConfig {
             members: hashset![0u64],
-            members_after_consensus: None,
         },
     ));
     router.assert_storage_state(1, 502, None, 500, expected_snap).await;

@@ -13,10 +13,6 @@ async fn test_get_membership_config_default() -> Result<()> {
     let store = MemStore::new(NODE_ID);
     let membership = store.get_membership_config().await?;
     assert_eq!(membership.members.len(), 1, "expected members len of 1");
-    assert!(
-        membership.members_after_consensus.is_none(),
-        "expected None for default members_after_consensus"
-    );
     Ok(())
 }
 
@@ -35,7 +31,6 @@ async fn test_get_membership_config_with_previous_state() -> Result<()> {
             payload: EntryPayload::ConfigChange(EntryConfigChange {
                 membership: MembershipConfig {
                     members: members.clone(),
-                    members_after_consensus: None,
                 },
             }),
         },
@@ -50,7 +45,6 @@ async fn test_get_membership_config_with_previous_state() -> Result<()> {
     let initial = store.get_membership_config().await?;
 
     assert_eq!(&initial.members, &members, "unexpected len for members");
-    assert!(initial.members_after_consensus.is_none(), "unexpected value for members_after_consensus");
     Ok(())
 }
 

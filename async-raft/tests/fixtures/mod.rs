@@ -132,10 +132,16 @@ impl RaftRouter {
         node.0.add_non_voter(target).await
     }
 
-    pub async fn change_membership(&self, leader: NodeId, members: HashSet<NodeId>) -> Result<(), ChangeConfigError> {
+    pub async fn add_voter(&self, leader: NodeId, new_voter: NodeId) -> Result<(), ChangeConfigError> {
         let rt = self.routing_table.read().await;
         let node = rt.get(&leader).unwrap_or_else(|| panic!("node with ID {} does not exist", leader));
-        node.0.change_membership(members).await
+        node.0.add_voter(new_voter).await
+    }
+
+    pub async fn remove_voter(&self, leader: NodeId, old_voter: NodeId) -> Result<(), ChangeConfigError> {
+        let rt = self.routing_table.read().await;
+        let node = rt.get(&leader).unwrap_or_else(|| panic!("node with ID {} does not exist", leader));
+        node.0.remove_voter(old_voter).await
     }
 
     /// Send a client read request to the target node.
@@ -204,11 +210,6 @@ impl RaftRouter {
             );
             let members = node.membership_config.members.iter().collect::<Vec<_>>();
             assert_eq!(members, vec![&node.id], "node {0} has membership {1:?}, expected [{0}]", node.id, members);
-            assert!(
-                node.membership_config.members_after_consensus.is_none(),
-                "node {} is in joint consensus, expected uniform consensus",
-                node.id
-            );
         }
     }
 
@@ -282,11 +283,6 @@ impl RaftRouter {
                 members, all_nodes,
                 "node {} has membership {:?}, expected {:?}",
                 node.id, members, all_nodes
-            );
-            assert!(
-                node.membership_config.members_after_consensus.is_none(),
-                "node {} was not in uniform consensus state",
-                node.id
             );
         }
     }

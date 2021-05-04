@@ -10,14 +10,14 @@ use tokio::time::sleep;
 
 use fixtures::RaftRouter;
 
-/// Client write tests.
+/// Leader stepdown test.
 ///
-/// What does this test do?
+/// Test plan:
 ///
-/// - create a stable 2-node cluster.
-/// - starts a config change which adds two new nodes and removes the leader.
-/// - the leader should commit the change to C0 & C1 with separate majorities and then stepdown
-///   after the config change is committed.
+/// - Create a single-node cluster of Node 0.
+/// - Add three new nodes (1, 2, 3) as Voters.
+/// - Ask the leader (Node 0) to remove itself from the cluster.
+/// - Ensure that the old leader (Node 0) no longer gets updates.
 ///
 /// RUST_LOG=async_raft,memstore,stepdown=trace cargo test -p async-raft --test stepdown
 #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
@@ -28,25 +28,41 @@ async fn stepdown() -> Result<()> {
     let config = Arc::new(Config::build("test".into()).validate().expect("failed to build Raft config"));
     let router = Arc::new(RaftRouter::new(config.clone()));
     router.new_raft_node(0).await;
-    router.new_raft_node(1).await;
 
     // Assert all nodes are in non-voter state & have no entries.
-    sleep(Duration::from_secs(3)).await;
+    sleep(Duration::from_secs(1)).await;
     router.assert_pristine_cluster().await;
 
     // Initialize the cluster, then assert that a stable cluster was formed & held.
-    tracing::info!("--- initializing cluster");
+    tracing::info!("--- Initializing cluster");
     router.initialize_from_single_node(0).await?;
-    sleep(Duration::from_secs(3)).await;
+    sleep(Duration::from_secs(1)).await;
     router.assert_stable_cluster(Some(1), Some(1)).await;
 
-    // Submit a config change which adds two new nodes and removes the current leader.
-    let orig_leader = router.leader().await.expect("expected the cluster to have a leader");
-    assert_eq!(0, orig_leader, "expected original leader to be node 0");
-    router.new_raft_node(2).await;
-    router.new_raft_node(3).await;
-    router.change_membership(orig_leader, hashset![1, 2, 3]).await?;
-    sleep(Duration::from_secs(5)).await; // Give time for step down metrics to flow through.
+    // Add three new nodes to the cluster.
+    let original_leader = router.leader().await.expect("expected the cluster to have a leader");
+    assert_eq!(0, original_leader, "expected original leader to be node 0");
+    for node in 1u64..=3 {
+        tracing::info!("--- Adding node {}", node);
+        router.new_raft_node(node).await;
+
+        let add_voter_router = Arc::clone(&router);
+        let voter_added = tokio::spawn(async move {
+            let _ = add_voter_router.add_voter(original_leader, node).await;
+        });
+
+        let request_router = Arc::clone(&router);
+        let request_processed = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            request_router.client_request(original_leader, "client", node).await;
+        });
+
+        tokio::join!(voter_added, request_processed).0?;
+    }
+
+    // Give time for step down metrics to flow through.
+    sleep(Duration::from_secs(1)).await;
 
     // Assert on the state of the old leader.
     {
@@ -54,41 +70,131 @@ async fn stepdown() -> Result<()> {
             .latest_metrics()
             .await
             .into_iter()
-            .find(|node| node.id == 0)
+            .find(|node| node.id == original_leader)
             .expect("expected to find metrics on original leader node");
         let cfg = metrics.membership_config;
-        assert!(metrics.state != State::Leader, "expected old leader to have stepped down");
+        assert_eq!(metrics.state, State::Leader, "expected node 0 to be the old leader");
         assert_eq!(
             metrics.current_term, 1,
             "expected old leader to still be in first term, got {}",
             metrics.current_term
         );
+        // 7 because
+        //   1 - initial entry
+        //   2, 3 - add node 1 and a request
+        //   4, 5 - add node 2 and a request
+        //   6, 7 - add node 3 and a request
         assert_eq!(
-            metrics.last_log_index, 3,
-            "expected old leader to have last log index of 3, got {}",
+            metrics.last_log_index, 7,
+            "expected old leader to have last log index of 7, got {}",
             metrics.last_log_index
         );
         assert_eq!(
-            metrics.last_applied, 3,
-            "expected old leader to have last applied of 3, got {}",
+            metrics.last_applied, 7,
+            "expected old leader to have last applied of 7, got {}",
+            metrics.last_applied
+        );
+        assert_eq!(
+            cfg.members,
+            hashset![0, 1, 2, 3],
+            "expected old leader to have membership of [0, 1, 2, 3], got {:?}",
+            cfg.members
+        );
+    }
+
+    // Perform the actual stepdown.
+    {
+        tracing::info!("--- Old leader stepping down");
+        let remove_leader_router = Arc::clone(&router);
+        let leader_removed = tokio::spawn(async move {
+            let _ = remove_leader_router.remove_voter(original_leader, original_leader).await;
+        });
+
+        let request_router = Arc::clone(&router);
+        let request_processed = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let new_leader = request_router
+                .latest_metrics()
+                .await
+                .into_iter()
+                .find(|m| m.state == State::Leader)
+                .expect("expected the cluster to have a new leader")
+                .id;
+
+            request_router.client_request(new_leader, "client", 0).await;
+        });
+
+        tokio::join!(leader_removed, request_processed).0?;
+    }
+
+    // Give time for step down metrics to flow through.
+    sleep(Duration::from_secs(1)).await;
+
+    // Assert on the state of the cluster without the old leader.
+    {
+        let metrics = router
+            .latest_metrics()
+            .await
+            .into_iter()
+            .find(|m| m.state == State::Leader)
+            .expect("expected the cluster to have a new leader");
+
+        let cfg = metrics.membership_config;
+        assert_eq!(
+            metrics.current_term, 2,
+            "expected the new leader to be in term 2, got {}",
+            metrics.current_term
+        );
+        // 10 because
+        //   we carried over 7 from before
+        //   8 - node removal
+        //   9 - request
+        //   10 - the new leader starts its term with a new entry
+        assert_eq!(
+            metrics.last_log_index, 10,
+            "expected the new leader to have last log index of 10, got {}",
+            metrics.last_log_index
+        );
+        assert_eq!(
+            metrics.last_applied, 10,
+            "expected the new leader to have last applied of 10, got {}",
             metrics.last_applied
         );
         assert_eq!(
             cfg.members,
             hashset![1, 2, 3],
-            "expected old leader to have membership of [1, 2, 3], got {:?}",
+            "expected new cluster to have membership of [1, 2, 3], got {:?}",
             cfg.members
         );
-        assert!(cfg.members_after_consensus.is_none(), "expected old leader to be out of joint consensus");
     }
 
-    // Assert that the current cluster is stable.
-    let _ = router.remove_node(0).await;
-    sleep(Duration::from_secs(5)).await; // Give time for a new leader to be elected.
-    router.assert_stable_cluster(Some(2), Some(4)).await;
-    router.assert_storage_state(2, 4, None, 0, None).await;
-    // ----------------------------------- ^^^ this is `0` instead of `4` because blank payloads from new leaders
-    //                                         and config change entries are never applied to the state machine.
+    // Assert that the old leader no longer gets updates.
+    {
+        let new_leader_metrics = router
+            .latest_metrics()
+            .await
+            .into_iter()
+            .find(|m| m.state == State::Leader)
+            .expect("expected the cluster to have a new leader");
+
+        let old_leader_metrics = router
+            .latest_metrics()
+            .await
+            .into_iter()
+            .find(|m| m.id == original_leader)
+            .expect("expected the cluster to have a new leader");
+
+        assert!(
+            old_leader_metrics.current_term < new_leader_metrics.current_term,
+            "expected the old leader to have term less than that of the new leader"
+        );
+
+        assert!(
+            old_leader_metrics.last_log_index < new_leader_metrics.last_log_index,
+            "expected the old leader to have last log index less than that of the new leader"
+        );
+    }
 
     Ok(())
 }
