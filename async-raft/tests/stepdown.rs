@@ -1,23 +1,25 @@
 mod fixtures;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use async_raft::{Config, State};
 use maplit::hashset;
-use tokio::time::sleep;
+use tracing::info;
 
-use fixtures::RaftRouter;
+use fixtures::{RaftRouter, sleep_for_a_sec};
+
+const CLUSTER_NAME: &str = "test";
+const CLIENT_ID: &str = "client";
 
 /// Leader stepdown test.
 ///
 /// Test plan:
 ///
-/// - Create a single-node cluster of Node 0.
-/// - Add three new nodes (1, 2, 3) as Voters.
-/// - Ask the leader (Node 0) to remove itself from the cluster.
-/// - Ensure that the old leader (Node 0) no longer gets updates.
+///   1. Create a single-node cluster of Node 0.
+///   1. Add three new nodes (1, 2, 3) as Voters.
+///   1. Ask the leader (Node 0) to remove itself from the cluster.
+///   1. Ensure that the old leader (Node 0) no longer gets updates.
 ///
 /// RUST_LOG=async_raft,memstore,stepdown=trace cargo test -p async-raft --test stepdown
 #[tokio::test(flavor = "multi_thread", worker_threads = 5)]
@@ -25,47 +27,57 @@ async fn stepdown() -> Result<()> {
     fixtures::init_tracing();
 
     // Setup test dependencies.
-    let config = Arc::new(Config::build("test".into()).validate().expect("failed to build Raft config"));
-    let router = Arc::new(RaftRouter::new(config.clone()));
-    router.new_raft_node(0).await;
+    let router = {
+        info!("--- Setup test dependencies");
+        let config = Arc::new(Config::build(CLUSTER_NAME.into()).validate().expect("failed to build Raft config"));
 
-    // Assert all nodes are in non-voter state & have no entries.
-    sleep(Duration::from_secs(1)).await;
-    router.assert_pristine_cluster().await;
+        Arc::new(RaftRouter::new(config.clone()))
+    };
 
-    // Initialize the cluster, then assert that a stable cluster was formed & held.
-    tracing::info!("--- Initializing cluster");
-    router.initialize_from_single_node(0).await?;
-    sleep(Duration::from_secs(1)).await;
-    router.assert_stable_cluster(Some(1), Some(1)).await;
+    {
+        info!("--- Initializing and asserting on a single-node cluster");
 
-    // Add three new nodes to the cluster.
-    let original_leader = router.leader().await.expect("expected the cluster to have a leader");
-    assert_eq!(0, original_leader, "expected original leader to be node 0");
-    for node in 1u64..=3 {
-        tracing::info!("--- Adding node {}", node);
-        router.new_raft_node(node).await;
+        router.new_raft_node(0).await;
+        sleep_for_a_sec().await;
+        router.assert_pristine_cluster().await;
 
-        let add_voter_router = Arc::clone(&router);
-        let voter_added = tokio::spawn(async move {
-            let _ = add_voter_router.add_voter(original_leader, node).await;
-        });
-
-        let request_router = Arc::clone(&router);
-        let request_processed = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            request_router.client_request(original_leader, "client", node).await;
-        });
-
-        tokio::join!(voter_added, request_processed).0?;
+        router.initialize_from_single_node(0).await?;
+        sleep_for_a_sec().await;
+        router.assert_stable_cluster(Some(1), Some(1)).await;
     }
 
-    // Give time for step down metrics to flow through.
-    sleep(Duration::from_secs(1)).await;
+    let original_leader = {
+        info!("--- Adding nodes 1, 2, 3 to the cluster");
 
-    // Assert on the state of the old leader.
+        let original_leader = router.leader().await.expect("expected the cluster to have a leader");
+        assert_eq!(0, original_leader, "expected original leader to be node 0");
+        for node in 1u64..=3 {
+            info!("--- Adding node {}", node);
+            router.new_raft_node(node).await;
+
+            let add_voter_router = Arc::clone(&router);
+            let voter_added = tokio::spawn(async move {
+                let _ = add_voter_router.add_voter(original_leader, node).await;
+            });
+
+            let request_router = Arc::clone(&router);
+            let request_processed = tokio::spawn(async move {
+                sleep_for_a_sec().await;
+
+                request_router.client_request(original_leader, CLIENT_ID, node).await;
+            });
+
+            tokio::join!(voter_added, request_processed).0?;
+        }
+
+        original_leader
+    };
+
+    sleep_for_a_sec().await;
+
     {
+        info!("--- Asserting whether the cluster formed properly");
+
         let metrics = router
             .latest_metrics()
             .await
@@ -102,9 +114,9 @@ async fn stepdown() -> Result<()> {
         );
     }
 
-    // Perform the actual stepdown.
     {
-        tracing::info!("--- Old leader stepping down");
+        info!("--- Old leader stepping down");
+
         let remove_leader_router = Arc::clone(&router);
         let leader_removed = tokio::spawn(async move {
             let _ = remove_leader_router.remove_voter(original_leader, original_leader).await;
@@ -112,7 +124,7 @@ async fn stepdown() -> Result<()> {
 
         let request_router = Arc::clone(&router);
         let request_processed = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            sleep_for_a_sec().await;
 
             let new_leader = request_router
                 .latest_metrics()
@@ -122,17 +134,17 @@ async fn stepdown() -> Result<()> {
                 .expect("expected the cluster to have a new leader")
                 .id;
 
-            request_router.client_request(new_leader, "client", 0).await;
+            request_router.client_request(new_leader, CLIENT_ID, 0).await;
         });
 
         tokio::join!(leader_removed, request_processed).0?;
     }
 
-    // Give time for step down metrics to flow through.
-    sleep(Duration::from_secs(1)).await;
+    sleep_for_a_sec().await;
 
-    // Assert on the state of the cluster without the old leader.
     {
+        info!("--- Asserting cluster state after the old leader stepped down");
+
         let metrics = router
             .latest_metrics()
             .await
@@ -169,8 +181,9 @@ async fn stepdown() -> Result<()> {
         );
     }
 
-    // Assert that the old leader no longer gets updates.
     {
+        info!("--- Asserting that the stepped down leader no longer gets updates");
+
         let new_leader_metrics = router
             .latest_metrics()
             .await
