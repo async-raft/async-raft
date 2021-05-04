@@ -7,7 +7,7 @@ mod install_snapshot;
 pub(crate) mod replication;
 mod vote;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use futures::future::{AbortHandle, Abortable};
@@ -323,7 +323,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
 
     /// Update the node's current membership config & save hard state.
     #[tracing::instrument(level = "trace", skip(self))]
-    fn update_membership(&mut self, cfg: MembershipConfig) -> RaftResult<()> {
+    fn update_membership(&mut self, cfg: MembershipConfig) {
         // If the given config does not contain this node's ID, it means one of the following:
         //
         // - the node is currently a non-voter and is replicating an old config to which it has
@@ -332,6 +332,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         // transition to the non-voter state as a signal for when it is safe to shutdown a node
         // being removed.
         self.membership = cfg;
+
         if !self.membership.contains(&self.id) {
             self.set_target_state(State::NonVoter);
         } else if self.target_state == State::NonVoter && self.membership.members.contains(&self.id) {
@@ -339,7 +340,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             // Transition to follower.
             self.set_target_state(State::Follower);
         }
-        Ok(())
     }
 
     /// Update the system's snapshot state based on the given data.
@@ -552,28 +552,16 @@ struct LeaderState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: Raf
     /// A field tracking the cluster's current consensus state, which is used for dynamic membership.
     pub(super) consensus_state: ConsensusState,
 
-    /// An optional response channel for when a config change has been proposed, and is awaiting a response.
-    pub(super) propose_config_change_cb: Option<oneshot::Sender<Result<(), RaftError>>>,
-    /// An optional receiver for when a joint consensus config is committed.
-    pub(super) joint_consensus_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
-
     pub(super) config_change_done_cb: Option<oneshot::Sender<Result<(), RaftError>>>,
 
     /// An optional receiver for when a config change is committed.
     pub(super) config_change_committed_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
-
-    /// An optional receiver for when a uniform consensus config is committed.
-    pub(super) uniform_consensus_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
 }
 
 impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> LeaderState<'a, D, R, N, S> {
     /// Create a new instance.
     pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
-        let consensus_state = if core.membership.is_in_joint_consensus() {
-            ConsensusState::Joint { is_committed: false }
-        } else {
-            ConsensusState::Uniform
-        };
+        let consensus_state = ConsensusState::Uniform;
         let (replicationtx, replicationrx) = mpsc::unbounded_channel();
         Self {
             core,
@@ -584,11 +572,8 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             replicationrx,
             consensus_state,
             awaiting_committed: Vec::new(),
-            propose_config_change_cb: None,
-            joint_consensus_cb: FuturesOrdered::new(),
             config_change_committed_cb: FuturesOrdered::new(),
             config_change_done_cb: None,
-            uniform_consensus_cb: FuturesOrdered::new(),
         }
     }
 
@@ -653,9 +638,6 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::RemoveNonVoter{id, tx} => {
                         self.remove_non_voter(id, tx);
                     }
-                    RaftMsg::ChangeMembership{members, tx} => {
-                        self.change_membership(members, tx).await;
-                    }
                     RaftMsg::AddVoter{id, tx} => {
                         self.add_voter(id, tx).await;
                     }
@@ -664,14 +646,6 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     }
                 },
                 Some(update) = self.core.rx_compaction.recv() => self.core.update_snapshot_state(update),
-                Some(Ok(res)) = self.joint_consensus_cb.next() => {
-                    match res {
-                        Ok(_) => self.handle_joint_consensus_committed().await?,
-                        Err(err) => if let Some(cb) = self.propose_config_change_cb.take() {
-                            let _ = cb.send(Err(err));
-                        }
-                    }
-                }
                 Some(Ok(res)) = self.config_change_committed_cb.next() => {
                     match res {
                         Ok(index) => {
@@ -685,19 +659,6 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         }
                   }
                 },
-                Some(Ok(res)) = self.uniform_consensus_cb.next() => {
-                    match res {
-                        Ok(index) => {
-                            let final_res = self.handle_uniform_consensus_committed(index).await;
-                            if let Some(cb) = self.propose_config_change_cb.take() {
-                                let _ = cb.send(final_res.map_err(From::from));
-                            }
-                        }
-                        Err(err) => if let Some(cb) = self.propose_config_change_cb.take() {
-                            let _ = cb.send(Err(err));
-                        }
-                    }
-                }
                 Some(event) = self.replicationrx.recv() => self.handle_replica_event(event).await,
                 Some(Ok(repl_sm_result)) = self.core.replicate_to_sm_handle.next() => {
                     // Errors herein will trigger shutdown, so no need to process error.
@@ -734,51 +695,20 @@ pub enum ConfigChangeOperation {
     RemovingNode,
 }
 
-/// A state enum used by Raft leaders to navigate the joint consensus protocol.
+/// A state enum used by Raft leaders to navigate the consensus protocol.
 pub enum ConsensusState {
+    /// The cluster consensus is uniform.
+    Uniform,
+
     CatchingUp {
         node: NodeId,
         tx: ChangeMembershipTx,
     },
+
     ConfigChange {
         node: NodeId,
         operation: ConfigChangeOperation,
     },
-
-    /// The cluster is preparring to go into joint consensus, but the leader is still syncing
-    /// some non-voters to prepare them for cluster membership.
-    NonVoterSync {
-        /// The set of non-voters nodes which are still being synced.
-        awaiting: HashSet<NodeId>,
-        /// The full membership change which has been proposed.
-        members: HashSet<NodeId>,
-        /// The response channel to use once the consensus state is back into uniform state.
-        tx: ChangeMembershipTx,
-    },
-    /// The cluster is in a joint consensus state and is syncing new nodes.
-    Joint {
-        /// A bool indicating if the associated config which started this joint consensus has yet been comitted.
-        ///
-        /// NOTE: when a new leader is elected, it will initialize this value to false, and then
-        /// update this value to true once the new leader's blank payload has been committed.
-        is_committed: bool,
-    },
-    /// The cluster consensus is uniform; not in a joint consensus state.
-    Uniform,
-}
-
-impl ConsensusState {
-    /// Check the current state to determine if it is in joint consensus, and if it is safe to finalize the joint consensus.
-    ///
-    /// The return value will be true if:
-    /// 1. this object currently represents a joint consensus state.
-    /// 2. the corresponding config for this consensus state has been committed to the cluster.
-    pub fn is_joint_consensus_safe_to_finalize(&self) -> bool {
-        match self {
-            ConsensusState::Joint { is_committed } => *is_committed,
-            _ => false,
-        }
-    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -788,23 +718,17 @@ impl ConsensusState {
 struct CandidateState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
     core: &'a mut RaftCore<D, R, N, S>,
     /// The number of votes which have been granted by peer nodes of the old (current) config group.
-    votes_granted_old: u64,
+    votes_granted: u64,
     /// The number of votes needed from the old (current) config group in order to become the Raft leader.
-    votes_needed_old: u64,
-    /// The number of votes which have been granted by peer nodes of the new config group (if applicable).
-    votes_granted_new: u64,
-    /// The number of votes needed from the new config group in order to become the Raft leader (if applicable).
-    votes_needed_new: u64,
+    votes_needed: u64,
 }
 
 impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> CandidateState<'a, D, R, N, S> {
     pub(self) fn new(core: &'a mut RaftCore<D, R, N, S>) -> Self {
         Self {
             core,
-            votes_granted_old: 0,
-            votes_needed_old: 0,
-            votes_granted_new: 0,
-            votes_needed_new: 0,
+            votes_granted: 0,
+            votes_needed: 0,
         }
     }
 
@@ -818,12 +742,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             }
 
             // Setup initial state per term.
-            self.votes_granted_old = 1; // We must vote for ourselves per the Raft spec.
-            self.votes_needed_old = ((self.core.membership.members.len() / 2) + 1) as u64; // Just need a majority.
-            if let Some(nodes) = &self.core.membership.members_after_consensus {
-                self.votes_granted_new = 1; // We must vote for ourselves per the Raft spec.
-                self.votes_needed_new = ((nodes.len() / 2) + 1) as u64; // Just need a majority.
-            }
+            // We must vote for ourselves per the Raft spec.
+            self.votes_granted = 1;
+            // Just need a majority.
+            self.votes_needed = ((self.core.membership.members.len() / 2) + 1) as u64;
 
             // Setup new term.
             self.core.update_next_election_timeout(false); // Generates a new rand value within range.
@@ -867,13 +789,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                         RaftMsg::AddNonVoter{tx, ..} => {
                             self.core.reject_config_change_not_leader(tx);
                         }
-                        RaftMsg::ChangeMembership{tx, ..} => {
+                        RaftMsg::RemoveNonVoter{tx, ..} => {
                             self.core.reject_config_change_not_leader(tx);
                         }
                         RaftMsg::AddVoter{tx, ..} => {
-                            self.core.reject_config_change_not_leader(tx);
-                        }
-                        RaftMsg::RemoveNonVoter{tx, ..} => {
                             self.core.reject_config_change_not_leader(tx);
                         }
                         RaftMsg::RemoveVoter{tx, ..} => {
@@ -940,13 +859,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::AddNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
-                    RaftMsg::ChangeMembership{tx, ..} => {
+                    RaftMsg::RemoveNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::AddVoter{tx, ..} => {
-                        self.core.reject_config_change_not_leader(tx);
-                    }
-                    RaftMsg::RemoveNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::RemoveVoter{tx, ..} => {
@@ -1008,13 +924,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     RaftMsg::AddNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
-                    RaftMsg::ChangeMembership{tx, ..} => {
+                    RaftMsg::RemoveNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::AddVoter{tx, ..} => {
-                        self.core.reject_config_change_not_leader(tx);
-                    }
-                    RaftMsg::RemoveNonVoter{tx, ..} => {
                         self.core.reject_config_change_not_leader(tx);
                     }
                     RaftMsg::RemoveVoter{tx, ..} => {

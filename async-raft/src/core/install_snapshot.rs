@@ -131,7 +131,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .get_membership_config()
             .await
             .map_err(|err| self.map_fatal_storage_error(err))?;
-        self.update_membership(membership)?;
+        self.update_membership(membership);
         self.last_log_index = req.last_included_index;
         self.last_log_term = req.last_included_term;
         self.last_applied = req.last_included_index;

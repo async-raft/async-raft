@@ -73,17 +73,6 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                 }
                 // If we are in NonVoterSync state, and this is one of the nodes being awaiting, then update.
                 match std::mem::replace(&mut self.consensus_state, ConsensusState::Uniform) {
-                    ConsensusState::NonVoterSync { mut awaiting, members, tx } => {
-                        awaiting.remove(&target);
-                        if awaiting.is_empty() {
-                            // We are ready to move forward with entering joint consensus.
-                            self.consensus_state = ConsensusState::Uniform;
-                            self.change_membership(members, tx).await;
-                        } else {
-                            // We are still awaiting additional nodes, so replace our original state.
-                            self.consensus_state = ConsensusState::NonVoterSync { awaiting, members, tx };
-                        }
-                    }
                     ConsensusState::CatchingUp { node, tx } => {
                         self.consensus_state = ConsensusState::Uniform;
                         self.add_voter(node, tx).await;
@@ -140,34 +129,22 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         }
 
         // Determine the new commit index of the current membership config nodes.
-        let mut indices_c0 = self
+        let mut indices = self
             .nodes
             .iter()
             .filter(|(id, _)| self.core.membership.members.contains(id))
             .map(|(_, node)| node.match_index)
             .collect::<Vec<_>>();
         if !self.is_stepping_down {
-            indices_c0.push(self.core.last_log_index);
+            indices.push(self.core.last_log_index);
         }
-        let commit_index_c0 = calculate_new_commit_index(indices_c0, self.core.commit_index);
+        let commit_index = calculate_new_commit_index(indices, self.core.commit_index);
 
-        // If we are in joint consensus, then calculate the new commit index of the new membership config nodes.
-        let mut commit_index_c1 = commit_index_c0; // Defaults to just matching C0.
-        if let Some(members) = &self.core.membership.members_after_consensus {
-            let indices_c1 = self
-                .nodes
-                .iter()
-                .filter(|(id, _)| members.contains(id))
-                .map(|(_, node)| node.match_index)
-                .collect();
-            commit_index_c1 = calculate_new_commit_index(indices_c1, self.core.commit_index);
-        }
-
-        // Determine if we have a new commit index, accounting for joint consensus.
+        // Determine if we have a new commit index.
         // If a new commit index has been established, then update a few needed elements.
-        let has_new_commit_index = commit_index_c0 > self.core.commit_index && commit_index_c1 > self.core.commit_index;
+        let has_new_commit_index = commit_index > self.core.commit_index;
         if has_new_commit_index {
-            self.core.commit_index = std::cmp::min(commit_index_c0, commit_index_c1);
+            self.core.commit_index = commit_index;
 
             // Update all replication streams based on new commit index.
             for node in self.nodes.values() {

@@ -108,8 +108,6 @@ pub enum ChangeConfigError {
     #[error("this node is not the Raft leader")]
     NodeNotLeader(Option<NodeId>),
     /// The proposed config changes would make no difference to the current config.
-    ///
-    /// This takes into account a current joint consensus and the end result of the config.
     #[error("the proposed config change would have no effect, this is a no-op")]
     Noop,
 }

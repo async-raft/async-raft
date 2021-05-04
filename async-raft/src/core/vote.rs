@@ -111,21 +111,11 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         if res.vote_granted {
             // Handle vote responses from the C0 config group.
             if self.core.membership.members.contains(&target) {
-                self.votes_granted_old += 1;
+                self.votes_granted += 1;
             }
-            // Handle vote responses from members of C1 config group.
-            if self
-                .core
-                .membership
-                .members_after_consensus
-                .as_ref()
-                .map(|members| members.contains(&target))
-                .unwrap_or(false)
-            {
-                self.votes_granted_new += 1;
-            }
+
             // If we've received enough votes from both config groups, then transition to leader state`.
-            if self.votes_granted_old >= self.votes_needed_old && self.votes_granted_new >= self.votes_needed_new {
+            if self.votes_granted >= self.votes_needed {
                 tracing::trace!("transitioning to leader state as minimum number of votes have been received");
                 self.core.set_target_state(State::Leader);
                 return Ok(());

@@ -55,19 +55,16 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
         // Check to see if we have any config change logs newer than our commit index. If so, then
         // we need to drive the commitment of the config change to the cluster.
-        let mut pending_config = None; // The inner bool represents `is_in_joint_consensus`.
+        let mut has_pending_config = false;
         if self.core.last_log_index > self.core.commit_index {
             let (stale_logs_start, stale_logs_stop) = (self.core.commit_index + 1, self.core.last_log_index + 1);
-            pending_config = self.core.storage.get_log_entries(stale_logs_start, stale_logs_stop).await
+            has_pending_config = self.core.storage.get_log_entries(stale_logs_start, stale_logs_stop).await
                 .map_err(|err| self.core.map_fatal_storage_error(err))?
                 // Find the most recent config change.
                 .iter().rev()
-                .filter_map(|entry| match &entry.payload {
-                    EntryPayload::ConfigChange(cfg) => Some(cfg.membership.is_in_joint_consensus()),
-                    EntryPayload::SnapshotPointer(cfg) => Some(cfg.membership.is_in_joint_consensus()),
-                    _ => None,
-                })
-                .next();
+                .any(|entry| {
+                    matches!(&entry.payload, EntryPayload::ConfigChange(_) | EntryPayload::SnapshotPointer(_))
+                });
         }
 
         // Commit the initial payload to the cluster.
@@ -79,22 +76,16 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         self.core.report_metrics();
 
         // Setup any callbacks needed for responding to commitment of a pending config.
-        if let Some(is_in_joint_consensus) = pending_config {
-            if is_in_joint_consensus {
-                self.joint_consensus_cb.push(rx_payload_committed); // Receiver for when the joint consensus is committed.
-            } else {
-                self.uniform_consensus_cb.push(rx_payload_committed); // Receiver for when the uniform consensus is committed.
-            }
+        if has_pending_config {
+            self.config_change_committed_cb.push(rx_payload_committed);
         }
         Ok(())
     }
 
     /// Handle client read requests.
     ///
-    /// Spawn requests to all members of the cluster, include members being added in joint
-    /// consensus. Each request will have a timeout, and we respond once we have a majority
-    /// agreement from each config group. Most of the time, we will have a single uniform
-    /// config group.
+    /// Spawn requests to all members of the cluster. Each request will have a timeout, and we
+    /// respond once we have a majority agreement from the current group.
     ///
     /// From the spec (§8):
     /// Second, a leader must check whether it has been deposed before processing a read-only
@@ -104,36 +95,20 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
     #[tracing::instrument(level = "trace", skip(self, tx))]
     pub(super) async fn handle_client_read_request(&mut self, tx: ClientReadResponseTx) {
         // Setup sentinel values to track when we've received majority confirmation of leadership.
-        let mut c0_confirmed = 0usize;
+        let mut confirmed = 0usize;
         let len_members = self.core.membership.members.len(); // Will never be zero, as we don't allow it when proposing config changes.
-        let c0_needed: usize = if (len_members % 2) == 0 {
+        let needed: usize = if (len_members % 2) == 0 {
             (len_members / 2) - 1
         } else {
             len_members / 2
         };
-        let mut c1_confirmed = 0usize;
-        let mut c1_needed = 0usize;
-        if let Some(joint_members) = &self.core.membership.members_after_consensus {
-            let len = joint_members.len(); // Will never be zero, as we don't allow it when proposing config changes.
-            c1_needed = if (len % 2) == 0 { (len / 2) - 1 } else { len / 2 };
-        }
 
-        // Increment confirmations for self, including post-joint-consensus config if applicable.
-        c0_confirmed += 1;
-        let is_in_post_join_consensus_config = self
-            .core
-            .membership
-            .members_after_consensus
-            .as_ref()
-            .map(|members| members.contains(&self.core.id))
-            .unwrap_or(false);
-        if is_in_post_join_consensus_config {
-            c1_confirmed += 1;
-        }
+        // Increment confirmations for self.
+        confirmed += 1;
 
-        // If we already have all needed confirmations — which would be the case for singlenode
+        // If we already have all needed confirmations — which would be the case for single-node
         // clusters — then respond.
-        if c0_confirmed >= c0_needed && c1_confirmed >= c1_needed {
+        if confirmed >= needed {
             let _ = tx.send(Ok(()));
             return;
         }
@@ -185,19 +160,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
             // If the term is the same, then it means we are still the leader.
             if self.core.membership.members.contains(&target) {
-                c0_confirmed += 1;
+                confirmed += 1;
             }
-            if self
-                .core
-                .membership
-                .members_after_consensus
-                .as_ref()
-                .map(|members| members.contains(&target))
-                .unwrap_or(false)
-            {
-                c1_confirmed += 1;
-            }
-            if c0_confirmed >= c0_needed && c1_confirmed >= c1_needed {
+
+            if confirmed >= needed {
                 let _ = tx.send(Ok(()));
                 return;
             }

@@ -270,19 +270,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
     ///
     /// If this Raft node is not the cluster leader, then the proposed configuration change will be
     /// rejected.
-    #[tracing::instrument(level = "debug", skip(self))]
-    pub async fn change_membership(&self, members: HashSet<NodeId>) -> Result<(), ChangeConfigError> {
-        let (tx, rx) = oneshot::channel();
-        self.inner
-            .tx_api
-            .send(RaftMsg::ChangeMembership { members, tx })
-            .map_err(|_| RaftError::ShuttingDown)?;
-        Ok(rx
-            .await
-            .map_err(|_| ChangeConfigError::RaftError(RaftError::ShuttingDown))
-            .and_then(|res| res)?)
-    }
-
     pub async fn add_voter(&self, new_voter: NodeId) -> Result<(), ChangeConfigError> {
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -363,15 +350,11 @@ pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
         id: NodeId,
         tx: ChangeMembershipTx,
     },
-    AddVoter {
+    RemoveNonVoter {
         id: NodeId,
         tx: ChangeMembershipTx,
     },
-    ChangeMembership {
-        members: HashSet<NodeId>,
-        tx: ChangeMembershipTx,
-    },
-    RemoveNonVoter {
+    AddVoter {
         id: NodeId,
         tx: ChangeMembershipTx,
     },
@@ -517,46 +500,26 @@ pub struct EntrySnapshotPointer {
 pub struct MembershipConfig {
     /// All members of the Raft cluster.
     pub members: HashSet<NodeId>,
-    /// All members of the Raft cluster after joint consensus is finalized.
-    ///
-    /// The presence of a value here indicates that the config is in joint consensus.
-    pub members_after_consensus: Option<HashSet<NodeId>>,
 }
 
 impl MembershipConfig {
     /// Get an iterator over all nodes in the current config.
     pub fn all_nodes(&self) -> HashSet<u64> {
-        let mut all = self.members.clone();
-        if let Some(members) = &self.members_after_consensus {
-            all.extend(members);
-        }
-        all
+        self.members.clone()
     }
 
     /// Check if the given NodeId exists in this membership config.
-    ///
-    /// When in joint consensus, this will check both config groups.
     pub fn contains(&self, x: &NodeId) -> bool {
         self.members.contains(x)
-            || if let Some(members) = &self.members_after_consensus {
-                members.contains(x)
-            } else {
-                false
-            }
-    }
-
-    /// Check to see if the config is currently in joint consensus.
-    pub fn is_in_joint_consensus(&self) -> bool {
-        self.members_after_consensus.is_some()
     }
 
     /// Create a new initial config containing only the given node ID.
     pub fn new_initial(id: NodeId) -> Self {
         let mut members = HashSet::new();
         members.insert(id);
+
         Self {
             members,
-            members_after_consensus: None,
         }
     }
 }
