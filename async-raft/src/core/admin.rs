@@ -72,6 +72,11 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         );
     }
 
+    /// Remove the Non-Voter with the specified identifier, responding on
+    /// the given channel.
+    ///
+    /// If the node is being synced as part of a configuration change, then
+    /// this request will fail.
     pub(super) fn remove_non_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
         let want_to_remove_node_catching_up = match self.consensus_state {
             ConsensusState::CatchingUp { node, .. } => node == id,
@@ -92,6 +97,11 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         let _ = tx.send(Err(ChangeConfigError::Noop));
     }
 
+    /// Add the node with the specified identifier as a Voter member of the cluster,
+    /// responding on the given channel once the process finished.
+    ///
+    /// If the node is not synced yet, then it is first brought up to speed (as a Non-Voter) and
+    /// then added to the cluster.
     #[tracing::instrument(level = "trace", skip(self, tx))]
     #[allow(clippy::map_entry)]
     pub(super) async fn add_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
@@ -167,15 +177,18 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         self.propagate_membership_change(tx).await;
     }
 
-    // NOTE WELL: this implementation uses replication streams (src/replication/**) to replicate
-    // entries. The node being removed from the config will still have an active replication stream
-    // until the leader determines that it has replicated the config entry which removes it from the
-    // cluster. At that point in time, the node will revert to non-voter state.
-    //
-    // HOWEVER, if an election takes place, the leader will not have the old node in its config
-    // and the old node may not revert to non-voter state using the above mechanism. That is fine.
-    // The Raft spec accounts for this using the 3rd safety measure of cluster configuration changes
-    // described at the very end of §6. This measure is already implemented and in place.
+    /// Remove the Voter node with the specified identifier from the cluster,
+    /// responding on the given channel once the process finished.
+    ///
+    /// NOTE WELL: this implementation uses replication streams (src/replication/**) to replicate
+    /// entries. The node being removed from the config will still have an active replication stream
+    /// until the leader determines that it has replicated the config entry which removes it from the
+    /// cluster. At that point in time, the node will revert to Non-Voter state.
+    ///
+    /// HOWEVER, if an election takes place, the leader will not have the old node in its config
+    /// and the old node may not revert to non-voter state using the above mechanism. That is fine.
+    /// The Raft spec accounts for this using the 3rd safety measure of cluster configuration changes
+    /// described at the very end of §6. This measure is already implemented and in place.
     #[tracing::instrument(level = "trace", skip(self, tx))]
     pub(super) async fn remove_voter(&mut self, id: NodeId, tx: ChangeMembershipTx) {
         if !self.core.membership.contains(&id) {
@@ -208,6 +221,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         self.propagate_membership_change(tx).await;
     }
 
+    /// Wrap up the configuration change process and enable new changes to take place.
+    ///
+    /// Once a config change is replicated by the majority of the new config, the process
+    /// is over, and we're safe to proceed with normal operation.
     #[tracing::instrument(level = "trace", skip(self))]
     pub(super) async fn handle_config_change_committed(&mut self, index: u64) -> Result<(), RaftError> {
         let node_to_remove = match self.consensus_state {
@@ -250,6 +267,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         Ok(())
     }
 
+    /// Replicate the requested membership change to other nodes in the cluster via the
+    /// normal Raft mechanisms. Will respond on the provided channel, once the config
+    /// change is done.
     #[tracing::instrument(level = "trace", skip(self, tx))]
     async fn propagate_membership_change(&mut self, tx: ChangeMembershipTx) {
         tracing::debug!("members: {:?}", self.core.membership.members);

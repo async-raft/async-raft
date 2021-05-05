@@ -551,10 +551,14 @@ struct LeaderState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: Raf
     pub(super) awaiting_committed: Vec<ClientRequestEntry<D, R>>,
     /// A field tracking the cluster's current consensus state, which is used for dynamic membership.
     pub(super) consensus_state: ConsensusState,
-
+    /// An optional receiver for when a config change has finished.
+    ///
+    /// The client requesting the config change holds the receiver end of this channel, waiting
+    /// for the change to finish.
     pub(super) config_change_done_cb: Option<oneshot::Sender<Result<(), RaftError>>>,
-
     /// An optional receiver for when a config change is committed.
+    ///
+    /// Once this receiver fires, the config change protocol can proceed and finish.
     pub(super) config_change_committed_cb: FuturesOrdered<oneshot::Receiver<Result<u64, RaftError>>>,
 }
 
@@ -689,22 +693,36 @@ struct NonVoterReplicationState<D: AppData> {
     pub tx: Option<oneshot::Sender<Result<(), ChangeConfigError>>>,
 }
 
+/// The nature of a configuration change.
 #[derive(Clone, Copy, PartialEq)]
 pub enum ConfigChangeOperation {
+    /// A new node is being added to the cluster.
     AddingNode,
+
+    /// An existing node is being removed from the cluster.
     RemovingNode,
 }
 
 /// A state enum used by Raft leaders to navigate the consensus protocol.
 pub enum ConsensusState {
     /// The cluster consensus is uniform.
+    ///
+    /// Configuration changes may only be requested in this state.
     Uniform,
 
+    /// The node to be added is not synced yet, and is being brought up to speed.
+    ///
+    /// Once the node is synced, the config change proceeds automatically to add the node
+    /// as a Voter member of the cluster.
     CatchingUp {
         node: NodeId,
         tx: ChangeMembershipTx,
     },
 
+    /// A configuration change is in progress.
+    ///
+    /// At any given time, at most one change is possible. Thus, if a client wishes to
+    /// perform additional config changes, it must wait for the current one to finish.
     ConfigChange {
         node: NodeId,
         operation: ConfigChangeOperation,
@@ -717,9 +735,9 @@ pub enum ConsensusState {
 /// Volatile state specific to a Raft node in candidate state.
 struct CandidateState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> {
     core: &'a mut RaftCore<D, R, N, S>,
-    /// The number of votes which have been granted by peer nodes of the old (current) config group.
+    /// The number of votes which have been granted by peer nodes of the config group.
     votes_granted: u64,
-    /// The number of votes needed from the old (current) config group in order to become the Raft leader.
+    /// The number of votes needed from the config group in order to become the Raft leader.
     votes_needed: u64,
 }
 

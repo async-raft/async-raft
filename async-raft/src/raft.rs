@@ -246,6 +246,18 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .and_then(|res| res)?)
     }
 
+    /// Cancel replication to the specified Non-Voter node.
+    ///
+    /// Although the Non-Voter role and the machinery around it mainly serves the purpose of
+    /// syncing and bringing up a node to speed prior to adding it as a Voter member (to prevent
+    /// disrupting the cluster), it can very well be used as a read-only replication/change data capture
+    /// mechanism. To support the latter use-case, this API can be used to remove Non-Voter nodes.
+    ///
+    /// If the node is being synced as part of a configuration change (causing the leader to be in
+    /// `CatchingUp` consensus state) then it cannot be removed. You have to wait for the
+    /// configuration change to take place.
+    ///
+    /// If this Raft node is not the cluster leader, then this call will fail.
     #[tracing::instrument(level = "debug", skip(self))]
     pub async fn remove_non_voter(&self, old_non_voter: NodeId) -> Result<(), ChangeConfigError> {
         let (tx, rx) = oneshot::channel();
@@ -259,17 +271,19 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .and_then(|res| res)?)
     }
 
-    /// Propose a cluster configuration change (§6).
+    /// Request the addition of the specified node as a Voter member of the cluster. Will return
+    /// once the configuration change has finished.
     ///
-    /// This will cause the leader to begin a cluster membership configuration change. If there
-    /// are new nodes in the proposed config which are not already registered as non-voters — from
-    /// an earlier call to `add_non_voter` — then the new nodes will first be synced as non-voters
-    /// before moving the cluster into joint consensus. As this process may take some time, it is
-    /// recommended that `add_non_voter` be called first for new nodes, and then once all new nodes
-    /// have been synchronized, call this method to start reconfiguration.
+    /// This will cause the leader to begin a cluster membership configuration change. If the new node
+    /// is not already registered as a Non-Voter — from an earlier call to `add_non_voter` — then the
+    /// new node will first be synced as a Non-Voter before actually performing the membership change.
+    /// While the synchronization takes place, the Leader enters `CatchingUp` consensus state, preventing
+    /// other configuration changes. As this process may take some time, it is recommended that
+    /// `add_non_voter` be called first for the new node, and then once the new node has been synchronized,
+    /// call this method to start reconfiguration.
     ///
-    /// If this Raft node is not the cluster leader, then the proposed configuration change will be
-    /// rejected.
+    /// If this Raft node is not the cluster leader or there is already another configuration change
+    /// in progress, then the change will be rejected.
     pub async fn add_voter(&self, new_voter: NodeId) -> Result<(), ChangeConfigError> {
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -282,6 +296,17 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             .and_then(|res| res)?)
     }
 
+    /// Request the removal of the specified Voter node from the cluster. Will return once the
+    /// configuration change has finished.
+    ///
+    /// Please note, that it is not guaranteed to be safe to immediately shut down the removed node
+    /// once this call returns. The node is only safe to be shut down once it replicated the config
+    /// change. Afterwards, it will not receive entries anymore. Shutting down the node early will
+    /// cause the cluster leader to constantly attempt to replicate the config change to the removed
+    /// node.
+    ///
+    /// If this Raft node is not the cluster leader or there is already another configuration change
+    /// in progress, then the change will be rejected.
     pub async fn remove_voter(&self, old_voter: NodeId) -> Result<(), ChangeConfigError> {
         let (tx, rx) = oneshot::channel();
         self.inner
