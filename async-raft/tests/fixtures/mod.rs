@@ -141,6 +141,12 @@ impl RaftRouter {
         node.0.add_non_voter(target).await
     }
 
+    pub async fn remove_non_voter(&self, leader: NodeId, old_non_voter: NodeId) -> Result<(), ChangeConfigError> {
+        let rt = self.routing_table.read().await;
+        let node = rt.get(&leader).unwrap_or_else(|| panic!("node with ID {} does not exist", leader));
+        node.0.remove_non_voter(old_non_voter).await
+    }
+
     pub async fn add_voter(&self, leader: NodeId, new_voter: NodeId) -> Result<(), ChangeConfigError> {
         let rt = self.routing_table.read().await;
         let node = rt.get(&leader).unwrap_or_else(|| panic!("node with ID {} does not exist", leader));
