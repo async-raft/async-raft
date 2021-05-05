@@ -1,6 +1,6 @@
 Raft API
 ========
-The `Raft` type represents the singular API of this crate, and is the interface to a running Raft node. It is highly generic, which allows your application's data types to be known at compile, for maximum performance and type-safety. Users of this Raft implementation get to choose the exact types to be used throughout the system, and get to work with their application's data types directly without the overhead of serializing and deserializing the data as it moves through the `Raft` system.
+The `Raft` type represents the singular API of this crate, and is the interface to a running Raft node. It is highly generic, which allows your application's data types to be known at compile time, for maximum performance and type-safety. Users of this Raft implementation get to choose the exact types to be used throughout the system, and get to work with their application's data types directly without the overhead of serializing and deserializing the data as it moves through the `Raft` system.
 
 In previous chapters, we've defined our `AppData`, `AppDataResponse`, `RaftNetwork` and `RaftStorage` types. These four types are used as part of a concrete `Raft` definition, and applications may find it beneficial to define an alias covering all of these types for easier reference. Something like the following:
 
@@ -13,7 +13,7 @@ type YourRaft = Raft<YourData, YourDataResponse, YourRaftNetwork, YourRaftStorag
 The API of the `Raft` type is broken up into 4 sections: Client Requests, Raft RPCs, Admin Commands & Utility Methods.
 
 #### Client Requests
-The application level interface for clients is 100% at the discression of the application being built. However, once a client read or write operation is ready to be processed, the below methods provide the read/write functionality for Raft interaction.
+The application level interface for clients is 100% at the discretion of the application being built. However, once a client read or write operation is ready to be processed, the below methods provide the read/write functionality for Raft interaction.
 
 - [`async fn client_read(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.client_read): Check to ensure this node is still the cluster leader, in order to guard against stale reads. The actual read operation itself is up to the application, this method just ensures that the read will not be stale.
 - [`async fn client_write(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.client_write): Submit a mutating client request to Raft to update the state of the system (§5.1). It will be appended to the log, committed to the cluster, and then applied to the application state machine. The result of applying the request to the state machine will be returned as the response from this method.
@@ -30,7 +30,9 @@ All of these methods are intended for use directly by the parent application for
 
 - [`async fn initialize(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.initialize): Initialize a pristine Raft node with the given config & start a campaign to become leader.
 - [`async fn add_non_voter(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.add_non_voter): Add a new node to the cluster as a non-voter, which will sync the node with the master so that it can later join the cluster as a voting member.
-- [`async fn change_membership(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.change_membership): Propose a new membership config change to a running cluster.
+- [`async fn remove_non_voter(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.remove_non_voter): Remove a previously added non-voter member of the cluster.
+- [`async fn add_voter(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.add_voter): Add a new node to the cluster as a proper Voter member. If necessary, the node will first be added as a Non-Voter, synced, and then promoted to Voter.
+- [`async fn remove_voter(...) -> Result<...>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.remove_voter): Remove a Voter member of the cluster.
 
 #### Utility Methods
 - [`fn metrics(&self) -> watch::Receiver<RaftMetrics>`](https://docs.rs/async-raft/latest/async_raft/raft/struct.Raft.html#method.metrics): Get a stream of all metrics coming from the Raft node.
