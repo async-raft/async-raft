@@ -47,14 +47,6 @@ async fn dynamic_membership() -> Result<()> {
     }
 
     {
-        info!("--- Syncing nodes 1, 2, 3, 4");
-
-        for node in 1u64..=4 {
-            router.new_raft_node(node).await;
-        }
-    }
-
-    {
         info!("--- Adding nodes 1, 2, 3, 4 as voters");
 
         for node in 1u64..=4 {
