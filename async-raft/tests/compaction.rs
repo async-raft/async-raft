@@ -37,7 +37,7 @@ async fn compaction() -> Result<()> {
                 .validate()
                 .expect("failed to build Raft config"),
         );
-        Arc::new(RaftRouter::new(config.clone()))
+        Arc::new(RaftRouter::new(config))
     };
 
     {

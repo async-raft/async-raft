@@ -31,7 +31,7 @@ async fn stepdown() -> Result<()> {
         info!("--- Setup test dependencies");
         let config = Arc::new(Config::build(CLUSTER_NAME.into()).validate().expect("failed to build Raft config"));
 
-        Arc::new(RaftRouter::new(config.clone()))
+        Arc::new(RaftRouter::new(config))
     };
 
     {
