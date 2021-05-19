@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,11 +5,8 @@ use anyhow::Result;
 use maplit::hashset;
 use tokio::time::sleep;
 
-use async_raft::{Config, NodeId, Raft, RaftStorage, State};
-use async_raft::raft::MembershipConfig;
-use async_raft::storage::HardState;
+use async_raft::{Config, NodeId, Raft, State};
 use fixtures::RaftRouter;
-use memstore::MemStore;
 
 use crate::fixtures::MemRaft;
 
@@ -27,8 +23,7 @@ mod fixtures;
 /// - shutdown all and retstart the non-voter node.
 /// - asserts the non-voter stays in non-vtoer state.
 ///
-/// RUST_LOG=async_raft,memstore,non_voter_restart=trace cargo test -p async-raft --test
-/// non_voter_restart
+/// RUST_LOG=async_raft,memstore,non_voter_restart=trace cargo test -p async-raft --test non_voter_restart
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn non_voter_restart() -> Result<()> {
     fixtures::init_tracing();
