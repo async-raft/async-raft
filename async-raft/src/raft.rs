@@ -336,7 +336,7 @@ pub(crate) enum RaftMsg<D: AppData, R: AppDataResponse> {
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// An RPC sent by a cluster leader to replicate log entries (§5.3), and as a heartbeat (§5.2).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppendEntriesRequest<D: AppData> {
     /// The leader's current term.
     pub term: u64,
@@ -357,7 +357,7 @@ pub struct AppendEntriesRequest<D: AppData> {
 }
 
 /// The response to an `AppendEntriesRequest`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct AppendEntriesResponse {
     /// The responding node's current term, for leader to update itself.
     pub term: u64,
@@ -377,7 +377,7 @@ pub struct AppendEntriesResponse {
 /// This implementation of Raft uses this value to more quickly synchronize a leader with its
 /// followers which may be some distance behind in replication, may have conflicting entries, or
 /// which may be new to the cluster.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct ConflictOpt {
     /// The term of the most recent entry which does not conflict with the received request.
     pub term: u64,
@@ -516,7 +516,7 @@ impl MembershipConfig {
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// An RPC sent by candidates to gather votes (§5.2).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct VoteRequest {
     /// The candidate's current term.
     pub term: u64,
@@ -541,7 +541,7 @@ impl VoteRequest {
 }
 
 /// The response to a `VoteRequest`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct VoteResponse {
     /// The current term of the responding node, for the candidate to update itself.
     pub term: u64,
@@ -553,7 +553,7 @@ pub struct VoteResponse {
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// An RPC sent by the Raft leader to send chunks of a snapshot to a follower (§7).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct InstallSnapshotRequest {
     /// The leader's current term.
     pub term: u64,
@@ -572,7 +572,7 @@ pub struct InstallSnapshotRequest {
 }
 
 /// The response to an `InstallSnapshotRequest`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct InstallSnapshotResponse {
     /// The receiving node's current term, for leader to update itself.
     pub term: u64,
