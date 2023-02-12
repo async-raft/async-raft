@@ -94,13 +94,7 @@ impl MemStore {
         let sm = RwLock::new(MemStoreStateMachine::default());
         let hs = RwLock::new(None);
         let current_snapshot = RwLock::new(None);
-        Self {
-            id,
-            log,
-            sm,
-            hs,
-            current_snapshot,
-        }
+        Self { id, log, sm, hs, current_snapshot }
     }
 
     /// Create a new `MemStore` instance with some existing state (for testing).
@@ -113,13 +107,7 @@ impl MemStore {
         let sm = RwLock::new(sm);
         let hs = RwLock::new(hs);
         let current_snapshot = RwLock::new(current_snapshot);
-        Self {
-            id,
-            log,
-            sm,
-            hs,
-            current_snapshot,
-        }
+        Self { id, log, sm, hs, current_snapshot }
     }
 
     /// Get a handle to the log for testing purposes.
@@ -249,7 +237,8 @@ impl RaftStorage<ClientRequest, ClientResponse> for MemStore {
             }
         }
         let previous = sm.client_status.insert(data.client.clone(), data.status.clone());
-        sm.client_serial_responses.insert(data.client.clone(), (data.serial, previous.clone()));
+        sm.client_serial_responses
+            .insert(data.client.clone(), (data.serial, previous.clone()));
         Ok(ClientResponse(previous))
     }
 
@@ -264,7 +253,8 @@ impl RaftStorage<ClientRequest, ClientResponse> for MemStore {
                 }
             }
             let previous = sm.client_status.insert(data.client.clone(), data.status.clone());
-            sm.client_serial_responses.insert(data.client.clone(), (data.serial, previous.clone()));
+            sm.client_serial_responses
+                .insert(data.client.clone(), (data.serial, previous.clone()));
         }
         Ok(())
     }

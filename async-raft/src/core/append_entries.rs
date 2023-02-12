@@ -131,10 +131,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
                 .await
                 .map_err(|err| self.map_fatal_storage_error(err))?;
             let opt = match old_entries.iter().find(|entry| entry.term == msg.prev_log_term) {
-                Some(entry) => Some(ConflictOpt {
-                    term: entry.term,
-                    index: entry.index,
-                }),
+                Some(entry) => Some(ConflictOpt { term: entry.term, index: entry.index }),
                 None => Some(ConflictOpt {
                     term: self.last_log_term,
                     index: self.last_log_index,
@@ -262,7 +259,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             storage.replicate_to_state_machine(&entries_refs).await?;
             Ok(None)
         });
-        self.replicate_to_sm_handle.push(handle);
+        self.replicate_to_sm_handle.push_back(handle);
     }
 
     /// Perform an initial replication of outstanding entries to the state machine.
@@ -300,6 +297,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
             storage.replicate_to_state_machine(&data_entries).await?;
             Ok(new_last_applied)
         });
-        self.replicate_to_sm_handle.push(handle);
+        self.replicate_to_sm_handle.push_back(handle);
     }
 }

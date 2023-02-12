@@ -16,10 +16,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         // If candidate's current term is less than this nodes current term, reject.
         if msg.term < self.current_term {
             tracing::trace!({candidate=msg.candidate_id, self.current_term, rpc_term=msg.term}, "RequestVote RPC term is less than current term");
-            return Ok(VoteResponse {
-                term: self.current_term,
-                vote_granted: false,
-            });
+            return Ok(VoteResponse { term: self.current_term, vote_granted: false });
         }
 
         // Do not respond to the request if we've received a heartbeat within the election timeout minimum.
@@ -31,10 +28,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
                     { candidate = msg.candidate_id },
                     "rejecting vote request received within election timeout minimum"
                 );
-                return Ok(VoteResponse {
-                    term: self.current_term,
-                    vote_granted: false,
-                });
+                return Ok(VoteResponse { term: self.current_term, vote_granted: false });
             }
         }
 
@@ -56,10 +50,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
                 { candidate = msg.candidate_id },
                 "rejecting vote request as candidate's log is not up-to-date"
             );
-            return Ok(VoteResponse {
-                term: self.current_term,
-                vote_granted: false,
-            });
+            return Ok(VoteResponse { term: self.current_term, vote_granted: false });
         }
 
         // TODO: add hook for PreVote optimization here. If the RPC is a PreVote, then at this
@@ -68,15 +59,9 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
         // Candidate's log is up-to-date so handle voting conditions.
         match &self.voted_for {
             // This node has already voted for the candidate.
-            Some(candidate_id) if candidate_id == &msg.candidate_id => Ok(VoteResponse {
-                term: self.current_term,
-                vote_granted: true,
-            }),
+            Some(candidate_id) if candidate_id == &msg.candidate_id => Ok(VoteResponse { term: self.current_term, vote_granted: true }),
             // This node has already voted for a different candidate.
-            Some(_) => Ok(VoteResponse {
-                term: self.current_term,
-                vote_granted: false,
-            }),
+            Some(_) => Ok(VoteResponse { term: self.current_term, vote_granted: false }),
             // This node has not yet voted for the current term, so vote for the candidate.
             None => {
                 self.voted_for = Some(msg.candidate_id);
@@ -84,10 +69,7 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Ra
                 self.update_next_election_timeout(false);
                 self.save_hard_state().await?;
                 tracing::trace!({candidate=msg.candidate_id, msg.term}, "voted for candidate");
-                Ok(VoteResponse {
-                    term: self.current_term,
-                    vote_granted: true,
-                })
+                Ok(VoteResponse { term: self.current_term, vote_granted: true })
             }
         }
     }
@@ -144,7 +126,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         for member in all_members.into_iter().filter(|member| member != &self.core.id) {
             let rpc = VoteRequest::new(self.core.current_term, self.core.id, self.core.last_log_index, self.core.last_log_term);
             let (network, tx_inner) = (self.core.network.clone(), tx.clone());
-            let _ = tokio::spawn(
+            tokio::spawn(
                 async move {
                     match network.vote(member, rpc).await {
                         Ok(res) => {

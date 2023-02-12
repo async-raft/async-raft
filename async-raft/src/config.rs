@@ -211,7 +211,7 @@ impl ConfigBuilder {
             return Err(ConfigError::MaxPayloadEntriesTooSmall);
         }
         let replication_lag_threshold = self.replication_lag_threshold.unwrap_or(DEFAULT_REPLICATION_LAG_THRESHOLD);
-        let snapshot_policy = self.snapshot_policy.unwrap_or_else(SnapshotPolicy::default);
+        let snapshot_policy = self.snapshot_policy.unwrap_or_default();
         let snapshot_max_chunk_size = self.snapshot_max_chunk_size.unwrap_or(DEFAULT_SNAPSHOT_CHUNKSIZE);
         Ok(Config {
             cluster_name: self.cluster_name,
@@ -237,9 +237,9 @@ mod tests {
     fn test_config_defaults() {
         let cfg = Config::build("cluster0".into()).validate().unwrap();
 
-        assert!(cfg.election_timeout_min >= DEFAULT_ELECTION_TIMEOUT_MIN as u64);
-        assert!(cfg.election_timeout_max <= DEFAULT_ELECTION_TIMEOUT_MAX as u64);
-        assert!(cfg.heartbeat_interval == DEFAULT_HEARTBEAT_INTERVAL as u64);
+        assert!(cfg.election_timeout_min >= DEFAULT_ELECTION_TIMEOUT_MIN);
+        assert!(cfg.election_timeout_max <= DEFAULT_ELECTION_TIMEOUT_MAX);
+        assert!(cfg.heartbeat_interval == DEFAULT_HEARTBEAT_INTERVAL);
         assert!(cfg.max_payload_entries == DEFAULT_MAX_PAYLOAD_ENTRIES);
         assert!(cfg.replication_lag_threshold == DEFAULT_REPLICATION_LAG_THRESHOLD);
         assert!(cfg.snapshot_max_chunk_size == DEFAULT_SNAPSHOT_CHUNKSIZE);

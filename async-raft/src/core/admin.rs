@@ -26,10 +26,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
         // Build a new membership config from given init data & assign it as the new cluster
         // membership config in memory only.
-        self.core.membership = MembershipConfig {
-            members,
-            members_after_consensus: None,
-        };
+        self.core.membership = MembershipConfig { members, members_after_consensus: None };
 
         // Become a candidate and start campaigning for leadership. If this node is the only node
         // in the cluster, then become leader without holding an election. If members len == 1, we
@@ -72,14 +69,8 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         // Spawn a replication stream for the new member. Track state as a non-voter so that it
         // can be updated to be added to the cluster config once it has been brought up-to-date.
         let state = self.spawn_replication_stream(target);
-        self.non_voters.insert(
-            target,
-            NonVoterReplicationState {
-                state,
-                is_ready_to_join: false,
-                tx: Some(tx),
-            },
-        );
+        self.non_voters
+            .insert(target, NonVoterReplicationState { state, is_ready_to_join: false, tx: Some(tx) });
     }
 
     #[tracing::instrument(level = "trace", skip(self, tx))]
@@ -107,7 +98,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         // if we can proceed.
         let mut awaiting = HashSet::new();
         for new_node in members.difference(&self.core.membership.members) {
-            match self.non_voters.get(&new_node) {
+            match self.non_voters.get(new_node) {
                 // Node is ready to join.
                 Some(node) if node.is_ready_to_join => continue,
                 // Node has repl stream, but is not yet ready to join.
@@ -117,14 +108,8 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     // Spawn a replication stream for the new member. Track state as a non-voter so that it
                     // can be updated to be added to the cluster config once it has been brought up-to-date.
                     let state = self.spawn_replication_stream(*new_node);
-                    self.non_voters.insert(
-                        *new_node,
-                        NonVoterReplicationState {
-                            state,
-                            is_ready_to_join: false,
-                            tx: None,
-                        },
-                    );
+                    self.non_voters
+                        .insert(*new_node, NonVoterReplicationState { state, is_ready_to_join: false, tx: None });
                 }
             }
             awaiting.insert(*new_node);
@@ -160,7 +145,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         // Setup channels for eventual response to the 2-phase config change.
         let (tx_cfg_change, rx_cfg_change) = oneshot::channel();
         self.propose_config_change_cb = Some(tx_cfg_change); // Once the entire process is done, this is our response channel.
-        self.joint_consensus_cb.push(rx_join); // Receiver for when the joint consensus is committed.
+        self.joint_consensus_cb.push_back(rx_join); // Receiver for when the joint consensus is committed.
         tokio::spawn(async move {
             let res = rx_cfg_change
                 .map_err(|_| RaftError::ShuttingDown)
@@ -224,7 +209,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         self.core.report_metrics();
 
         // Setup channel for eventual commitment of the uniform consensus config.
-        self.uniform_consensus_cb.push(rx_uniform); // Receiver for when the uniform consensus is committed.
+        self.uniform_consensus_cb.push_back(rx_uniform); // Receiver for when the uniform consensus is committed.
         Ok(())
     }
 

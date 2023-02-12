@@ -13,23 +13,23 @@ repository = "https://github.com/async-raft/async-raft"
 readme = "../README.md"
 
 [dependencies]
-anyhow = "1.0.32"
+anyhow = "1"
 async-trait = "0.1.36"
-bytes = "1.0"
+bytes = "1"
 derive_more = { version="0.99.9", default-features=false, features=["from"] }
 futures = "0.3"
 log = "0.4"
 rand = "0.7"
 serde = { version="1", features=["derive"] }
-thiserror = "1.0.20"
-tokio = { version="1.0", default-features=false, features=["fs", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
+thiserror = "1"
+tokio = { version="1", default-features=false, features=["fs", "io-util", "macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-futures = "0.2.4"
 
 [dev-dependencies]
-maplit = "1.0.2"
+maplit = "1"
 memstore = { version="0.2.0", path="../memstore" }
-tracing-subscriber = "0.2.10"
+tracing-subscriber = "0.2"
 
 [features]
 docinclude = [] # Used only for activating `doc(include="...")` on nightly.

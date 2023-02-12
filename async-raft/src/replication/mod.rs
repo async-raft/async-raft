@@ -18,6 +18,7 @@ use crate::{AppData, AppDataResponse, NodeId, RaftNetwork, RaftStorage};
 /// The public handle to a spawned replication stream.
 pub(crate) struct ReplicationStream<D: AppData> {
     /// The spawn handle the `ReplicationCore` task.
+    #[allow(dead_code)]
     pub handle: JoinHandle<()>,
     /// The channel used for communicating with the replication task.
     pub repltx: mpsc::UnboundedSender<RaftEvent<D>>,
@@ -223,7 +224,10 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Re
                 return;
             }
         };
-        let last_index_and_term = self.outbound_buffer.last().map(|last| (last.as_ref().index, last.as_ref().term));
+        let last_index_and_term = self
+            .outbound_buffer
+            .last()
+            .map(|last| (last.as_ref().index, last.as_ref().term));
         self.outbound_buffer.clear(); // Once we've successfully sent a payload of entries, don't send them again.
 
         // Handle success conditions.
@@ -258,10 +262,9 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Re
         // Replication was not successful, if a newer term has been returned, revert to follower.
         if res.term > self.term {
             tracing::trace!({ res.term }, "append entries failed, reverting to follower");
-            let _ = self.rafttx.send(ReplicaEvent::RevertToFollower {
-                target: self.target,
-                term: res.term,
-            });
+            let _ = self
+                .rafttx
+                .send(ReplicaEvent::RevertToFollower { target: self.target, term: res.term });
             self.target_state = TargetReplState::Shutdown;
             return;
         }
@@ -335,7 +338,6 @@ impl<D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> Re
                     }
                     // Follower is behind, but not too far behind to receive an InstallSnapshot RPC.
                     self.target_state = TargetReplState::Lagging;
-                    return;
                 }
             }
         }
@@ -515,10 +517,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
     #[tracing::instrument(level = "trace", skip(self), fields(state = "line-rate"))]
     pub async fn run(mut self) {
-        let event = ReplicaEvent::RateUpdate {
-            target: self.core.target,
-            is_line_rate: true,
-        };
+        let event = ReplicaEvent::RateUpdate { target: self.core.target, is_line_rate: true };
         let _ = self.core.rafttx.send(event);
         loop {
             if self.core.target_state != TargetReplState::LineRate {
@@ -576,7 +575,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
         }
         // Prepend.
         self.core.outbound_buffer.reverse();
-        self.core.outbound_buffer.extend(entries.into_iter().rev().map(OutboundEntry::Raw));
+        self.core
+            .outbound_buffer
+            .extend(entries.into_iter().rev().map(OutboundEntry::Raw));
         self.core.outbound_buffer.reverse();
     }
 }
@@ -598,10 +599,7 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
     #[tracing::instrument(level = "trace", skip(self), fields(state = "lagging"))]
     pub async fn run(mut self) {
-        let event = ReplicaEvent::RateUpdate {
-            target: self.core.target,
-            is_line_rate: false,
-        };
+        let event = ReplicaEvent::RateUpdate { target: self.core.target, is_line_rate: false };
         let _ = self.core.rafttx.send(event);
         self.core.replication_buffer.clear();
         self.core.outbound_buffer.clear();
@@ -674,7 +672,9 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
                     return;
                 }
             }
-            self.core.outbound_buffer.extend(entries.into_iter().map(OutboundEntry::Raw));
+            self.core
+                .outbound_buffer
+                .extend(entries.into_iter().map(OutboundEntry::Raw));
         }
     }
 }
@@ -693,19 +693,12 @@ struct SnapshottingState<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, 
 impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>> SnapshottingState<'a, D, R, N, S> {
     /// Create a new instance.
     pub fn new(core: &'a mut ReplicationCore<D, R, N, S>) -> Self {
-        Self {
-            core,
-            snapshot: None,
-            snapshot_fetch_rx: None,
-        }
+        Self { core, snapshot: None, snapshot_fetch_rx: None }
     }
 
     #[tracing::instrument(level = "trace", skip(self), fields(state = "snapshotting"))]
     pub async fn run(mut self) {
-        let event = ReplicaEvent::RateUpdate {
-            target: self.core.target,
-            is_line_rate: false,
-        };
+        let event = ReplicaEvent::RateUpdate { target: self.core.target, is_line_rate: false };
         let _ = self.core.rafttx.send(event);
         self.core.replication_buffer.clear();
         self.core.outbound_buffer.clear();
@@ -718,10 +711,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
             // If we don't have any of the components we need, fetch the current snapshot.
             if self.snapshot.is_none() && self.snapshot_fetch_rx.is_none() {
                 let (tx, rx) = oneshot::channel();
-                let _ = self.core.rafttx.send(ReplicaEvent::NeedsSnapshot {
-                    target: self.core.target,
-                    tx,
-                });
+                let _ = self
+                    .core
+                    .rafttx
+                    .send(ReplicaEvent::NeedsSnapshot { target: self.core.target, tx });
                 self.snapshot_fetch_rx = Some(rx);
             }
 
@@ -812,10 +805,10 @@ impl<'a, D: AppData, R: AppDataResponse, N: RaftNetwork<D>, S: RaftStorage<D, R>
 
             // Handle response conditions.
             if res.term > self.core.term {
-                let _ = self.core.rafttx.send(ReplicaEvent::RevertToFollower {
-                    target: self.core.target,
-                    term: res.term,
-                });
+                let _ = self
+                    .core
+                    .rafttx
+                    .send(ReplicaEvent::RevertToFollower { target: self.core.target, term: res.term });
                 self.core.target_state = TargetReplState::Shutdown;
                 return Ok(());
             }
